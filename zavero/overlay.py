@@ -16,7 +16,9 @@ import sys
 import time
 
 from PyQt6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QTimer, QVariantAnimation, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QRadialGradient, QTextDocument
+from PyQt6.QtGui import (
+    QBrush, QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient, QTextDocument,
+)
 from PyQt6.QtWidgets import QApplication, QWidget
 
 R = 26  # avatar radius
@@ -39,6 +41,30 @@ def to_html(text: str) -> str:
     t = html.escape(text)
     t = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t)
     return t.replace("\n", "<br>")
+
+
+def avatar_icon(size: int = 64) -> QIcon:
+    """Zavero's face as an icon (system tray)."""
+    pix = QPixmap(size, size)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    c, r = QPointF(size / 2, size / 2), size / 2 - 2
+    g = QRadialGradient(c + QPointF(-r * 0.35, -r * 0.45), r * 1.6)
+    g.setColorAt(0, ACCENT.lighter(160))
+    g.setColorAt(0.55, ACCENT)
+    g.setColorAt(1, ACCENT.darker(160))
+    p.setBrush(QBrush(g))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.drawEllipse(c, r, r)
+    for ex in (-0.33, 0.33):
+        eye = c + QPointF(ex * r, -0.15 * r)
+        p.setBrush(QColor("white"))
+        p.drawEllipse(eye, r * 0.22, r * 0.26)
+        p.setBrush(QColor("#1E1B4B"))
+        p.drawEllipse(eye, r * 0.11, r * 0.13)
+    p.end()
+    return QIcon(pix)
 
 
 class Overlay(QWidget):

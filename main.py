@@ -3,17 +3,26 @@
     python main.py                                   # hold Right Ctrl and speak
     python main.py --task "open notepad"             # skip voice, guide mode
     python main.py --task "open notepad and type hello" --do
+
+start_zavero.bat runs this with pythonw (no console window). Output then goes to logs/zavero.log.
 """
 import argparse
 import signal
 import sys
 
-from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QApplication
+from zavero import config
 
-from zavero.orchestrator import Orchestrator
-from zavero.overlay import Overlay
-from zavero.voice import PushToTalk
+if sys.stdout is None:  # started with pythonw: no console, so keep prints and errors in a file
+    config.LOG_DIR.mkdir(exist_ok=True)
+    sys.stdout = sys.stderr = open(config.LOG_DIR / "zavero.log", "a", encoding="utf-8", buffering=1)
+
+from PyQt6.QtCore import QLockFile, QTimer  # noqa: E402
+from PyQt6.QtGui import QAction  # noqa: E402
+from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon  # noqa: E402
+
+from zavero.orchestrator import Orchestrator  # noqa: E402
+from zavero.overlay import Overlay, avatar_icon  # noqa: E402
+from zavero.voice import PushToTalk  # noqa: E402
 
 
 def main() -> None:
@@ -23,9 +32,30 @@ def main() -> None:
     args = p.parse_args()
 
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
+
+    # Only one Zavero at a time (double-clicking the launcher twice is easy to do).
+    config.LOG_DIR.mkdir(exist_ok=True)
+    lock = QLockFile(str(config.LOG_DIR / "zavero.lock"))
+    if not lock.tryLock(100):
+        print("Zavero is already running.")
+        return
+
     overlay = Overlay()
     overlay.show()
     orch = Orchestrator(overlay)
+
+    tray = QSystemTrayIcon(avatar_icon(), app)
+    tray.setToolTip("Zavero - hold Right Ctrl and speak")
+    menu = QMenu()
+    stop_action = QAction("Stop current task", menu)
+    stop_action.triggered.connect(orch.stop)
+    quit_action = QAction("Quit Zavero", menu)
+    quit_action.triggered.connect(app.quit)
+    menu.addAction(stop_action)
+    menu.addAction(quit_action)
+    tray.setContextMenu(menu)
+    tray.show()
 
     def on_status(msg: str) -> None:
         print(f"[{msg}]", flush=True)
@@ -61,8 +91,9 @@ def main() -> None:
     tick.timeout.connect(lambda: None)
     tick.start(200)
 
-    print("Zavero is running. Hold Right Ctrl and speak. Esc = stop. Ctrl+C here = quit.", flush=True)
-    sys.exit(app.exec())
+    print("Zavero is running. Hold Right Ctrl and speak. Esc = stop. Quit from the tray icon.", flush=True)
+    app.exec()
+    lock.unlock()
 
 
 if __name__ == "__main__":

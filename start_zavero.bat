@@ -1,7 +1,5 @@
 @echo off
-rem Double-click to start Zavero. The window stays open so you can see any error.
+rem Double-click to start Zavero. No console window: quit from the Zavero icon in the tray.
+rem Problems are written to logs\zavero.log. To see output live, run: .venv\Scripts\python.exe main.py
 cd /d "%~dp0"
-".venv\Scripts\python.exe" main.py
-echo.
-echo Zavero stopped. Press any key to close this window.
-pause >nul
+start "" ".venv\Scripts\pythonw.exe" main.py
