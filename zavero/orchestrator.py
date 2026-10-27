@@ -1,0 +1,278 @@
+"""Ties voice -> brain -> overlay -> driver together and holds session state."""
+import re
+import threading
+import time
+
+from pynput import keyboard, mouse
+
+from zavero import actionlog, config, driver, narrator, safety
+from zavero.brain import Brain, Step
+
+# Short spoken commands. Matched as whole words/phrases after lowercasing.
+WORDS = {
+    "stop": ["stop", "aagu", "aapu", "aapandi", "ruko", "ruk", "bas", "ఆగు", "ఆపు", "ఆపండి", "రుకో", "रुको", "रुक", "बस"],
+    "no": ["no", "nope", "nahi", "nahin", "vaddu", "oddu", "cancel", "don't", "వద్దు", "కాదు", "नहीं", "नही", "मत"],
+    "do": ["do it", "you do it", "you do", "chey", "cheyyi", "cheyi", "nuvve chey", "chesey", "kar do", "karo",
+           "kar dijiye", "చెయ్", "చెయ్యి", "చేయి", "చేసెయ్", "చేసేయ్", "చేయండి", "కర్ దో", "कर दो", "करो", "कर दीजिए"],
+    "yes": ["yes", "yeah", "yep", "ok", "okay", "sure", "haan", "haa", "han", "ha", "avunu", "avnu", "sare",
+            "theek hai", "thik hai", "అవును", "సరే", "హా", "హాం", "ఓకే", "हाँ", "हां", "हा", "ठीक है", "ओके"],
+    "next": ["next", "done", "ayindi", "aipoyindi", "ho gaya", "hogaya", "అయింది", "అయ్యింది", "అయిపోయింది", "हो गया"],
+}
+
+
+def _norm(text: str) -> str:
+    # Only strip punctuation; \W would also strip Telugu/Hindi vowel signs.
+    return " " + " ".join(re.sub(r"[.,!?।॥\"'“”‘’]", " ", text.lower()).split()) + " "
+
+
+def classify(text: str) -> str:
+    """Return 'stop' | 'no' | 'do' | 'yes' | 'next' | 'task'. Commands only count in short phrases."""
+    n = _norm(text)
+    short = len(n.split()) <= 4
+    has = lambda k: any(f" {w} " in n for w in WORDS[k])  # noqa: E731
+    if short and has("stop"):
+        return "stop"
+    if short and has("no"):
+        return "no"
+    if has("do"):
+        return "do"
+    if short and has("yes"):
+        return "yes"
+    if short and has("next"):
+        return "next"
+    return "task"
+
+
+class Cancelled(Exception):
+    pass
+
+
+class Orchestrator:
+    """One task at a time. Guide mode by default; 'do it' switches to do mode."""
+
+    def __init__(self, ui) -> None:
+        self.ui = ui
+        self.mode = "guide"
+        self.user_text = ""
+        self._worker: threading.Thread | None = None
+        self._cancel = threading.Event()
+        self._acted = threading.Event()      # guide mode: user did the step (or said "do it")
+        self._waiting = False
+        self._asking = False
+        self._answer: bool | None = None
+        self._answered = threading.Event()
+        self._say_seq = 0
+        mouse.Listener(on_click=self._on_click).start()
+        keyboard.Listener(on_press=self._on_key).start()
+
+    @property
+    def busy(self) -> bool:
+        return self._worker is not None and self._worker.is_alive()
+
+    # --- inputs ---------------------------------------------------------
+    def on_transcript(self, text: str) -> None:
+        """Called with each final transcript from voice.py."""
+        intent = classify(text)
+        actionlog.log("heard", text=text, intent=intent)
+        if self._asking:
+            if intent in ("yes", "do", "no", "stop"):
+                self._answer = intent in ("yes", "do")
+                self._answered.set()
+            if intent == "stop":
+                self.stop()
+            return
+        if intent == "stop":
+            self.stop()
+            return
+        if self.busy:
+            if intent == "do" and len(_norm(text).split()) <= 4:
+                self.mode = "do"
+                self.ui.set_mode.emit("Doing")
+                self._acted.set()
+                return
+            if intent == "next":
+                self._acted.set()
+                return
+            if intent in ("yes", "no", "do") or len(_norm(text).split()) <= 3:
+                return  # stray "okay" / "haan" while working: ignore
+            self.stop()
+            self._worker.join(5)
+        if intent == "do" and len(_norm(text).split()) <= 4:
+            if not self.user_text:
+                self._say("Tell me what you want to do first.", "info")
+                return
+            self.start(self.user_text, "do")  # "do it" after a guided task -> redo it for them
+            return
+        self.start(text, "do" if intent == "do" else "guide")
+
+    def _on_click(self, x, y, button, pressed) -> None:
+        if pressed and self._waiting:
+            self._acted.set()
+
+    def _on_key(self, key) -> None:
+        if key == keyboard.Key.esc and self.busy:
+            self.stop()
+        elif key == keyboard.Key.enter and self._waiting:
+            self._acted.set()
+
+    def stop(self) -> None:
+        """Cancel the running task right away."""
+        if self.busy:
+            self._cancel.set()
+            self._acted.set()
+            self._answered.set()
+
+    def start(self, text: str, mode: str) -> None:
+        self.user_text = text
+        self.mode = mode
+        self._cancel.clear()
+        self._worker = threading.Thread(target=self._run, args=(text,), daemon=True)
+        self._worker.start()
+
+    # --- the loop -------------------------------------------------------
+    def _run(self, task: str) -> None:
+        ui = self.ui
+        ui.set_mode.emit("Doing" if self.mode == "do" else "Guide")
+        self._say("Let me look at your screen…", "info")
+        actionlog.log("task", text=task, mode=self.mode)
+        brain = Brain(task)
+        try:
+            shot = driver.screenshot()
+            result = brain.start(shot)
+            while isinstance(result, Step):
+                self._check()
+                if brain.steps > config.MAX_STEPS:
+                    ui.go_home.emit()
+                    self._say("This is taking too many steps, so I stopped. Please try a smaller task.", "warn")
+                    return
+                step = result
+                acked = self._guide(step, shot) if self.mode == "guide" else None
+                if acked is None:  # do mode (or user switched to do mid-step)
+                    acked = self._do(step, shot)
+                time.sleep(1.0)  # let the screen update
+                self._check()
+                shot = driver.screenshot()
+                result = brain.next(step, shot, acked)
+            ui.go_home.emit()
+            self._say(narrator.narrate("final", task, result), "done")
+            actionlog.log("finished", text=result)
+        except Cancelled:
+            ui.go_home.emit()
+            self._say("Stopped.", "info")
+            actionlog.log("stopped")
+        except Exception as e:  # noqa: BLE001 - show every problem to the user
+            ui.go_home.emit()
+            self._say(f"Sorry, something went wrong:\n{e}", "error")
+            actionlog.log("error", error=str(e))
+        finally:
+            self._waiting = self._asking = False
+            actionlog.log("tokens", input=brain.tokens_in, output=brain.tokens_out, steps=brain.steps)
+
+    def _check(self) -> None:
+        if self._cancel.is_set():
+            raise Cancelled
+
+    def _target(self, step: Step, shot) -> tuple[int, int] | None:
+        """Real-screen point of the first action that has coordinates."""
+        get = driver._get
+        for a in step.actions:
+            x, y = get(a, "x"), get(a, "y")
+            path = get(a, "path")
+            if x is None and path:
+                x, y = get(path[0], "x"), get(path[0], "y")
+            if x is not None and y is not None:
+                return driver.to_screen(x, y, shot)
+        return None
+
+    def _guide(self, step: Step, shot) -> list | None:
+        """Show the user what to do and wait for them. Returns acked checks, or None to switch to do mode."""
+        if all(getattr(a, "type", "") in ("wait", "screenshot", "move") for a in step.actions):
+            for a in step.actions:
+                driver.execute(a, shot)
+            return []
+        target = self._target(step, shot)
+        if target:
+            self.ui.point_at.emit(*target)
+        text = narrator.narrate("guide", self.user_text, step.text, step.actions)
+        self._say(text, "info")
+        actionlog.log("guide", note=step.text, bubble=text, target=target)
+        self._acted.clear()
+        self._waiting = True
+        self._acted.wait()
+        self._waiting = False
+        self._check()
+        if self.mode == "do":
+            return None
+        # The user did this step with their own hands, so they have approved it.
+        return step.safety_checks
+
+    def _do(self, step: Step, shot) -> list:
+        """Run the step ourselves, asking first if it is risky."""
+        ui = self.ui
+        secret = safety.secret_reason(step.text, step.actions)
+        if secret:
+            self._say(narrator.narrate("handoff", self.user_text, step.text, step.actions, secret), "warn")
+            actionlog.log("handoff", reason=secret, note=step.text)
+            self._acted.clear()
+            self._waiting = True
+            self._acted.wait()
+            self._waiting = False
+            self._check()
+            return step.safety_checks
+        # The API flags every action with the generic code below. The user's "do it" is their OK for
+        # those; anything else (risky words, other check codes) still needs a spoken yes.
+        reason = safety.risky_reason(step.text, step.actions)
+        special = [c for c in step.safety_checks if c.get("code") != safety.GENERIC_CHECK]
+        if not reason and special:
+            reason = special[0].get("message") or "the system flagged this step"
+        if not reason and step.safety_checks:
+            actionlog.log("auto_ack", reason="user said do it", checks=[c["code"] for c in step.safety_checks])
+        target = self._target(step, shot)
+        if reason:
+            if target:
+                ui.point_at.emit(*target)
+            question = narrator.narrate("confirm", self.user_text, step.text, step.actions, reason)
+            if not self._ask(question):
+                raise Cancelled
+            actionlog.log("approved", reason=reason, note=step.text)
+        if target:
+            ui.point_at.emit(*target)
+        self._say_async("do", step)  # write the bubble while we click, not before
+        time.sleep(0.6)  # let the avatar fly there first
+        for a in step.actions:
+            self._check()
+            kind = getattr(a, "type", "")
+            if kind in ("click", "double_click") and target:
+                ui.tap_at.emit(*driver.to_screen(a.x, a.y, shot))
+            driver.execute(a, shot)
+            actionlog.log("action", **a.model_dump())
+            time.sleep(0.15)
+        return step.safety_checks
+
+    def _say(self, text: str, mood: str) -> None:
+        """Show bubble text and invalidate any older async narration still in flight."""
+        self._say_seq += 1
+        self.ui.show_text.emit(text, mood)
+
+    def _say_async(self, kind: str, step: Step) -> None:
+        """Narrate in the background; drop the result if something newer was shown meanwhile."""
+        self._say_seq += 1
+        seq = self._say_seq
+
+        def work() -> None:
+            text = narrator.narrate(kind, self.user_text, step.text, step.actions)
+            if seq == self._say_seq:
+                self.ui.show_text.emit(text, "info")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _ask(self, question: str) -> bool:
+        """Ask a yes/no question in the bubble; the user answers by voice. No answer = no."""
+        self._say(question, "warn")
+        self._answer = None
+        self._answered.clear()
+        self._asking = True
+        self._answered.wait(120)
+        self._asking = False
+        self._check()
+        return bool(self._answer)
