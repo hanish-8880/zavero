@@ -7,6 +7,7 @@ import asyncio
 import json
 import queue
 import threading
+import time
 from typing import Callable
 
 import sounddevice as sd
@@ -19,7 +20,7 @@ _END = None  # sentinel: user released the hotkey
 
 
 class PushToTalk:
-    """Hold Ctrl+Space to record. Calls on_final(text) after release."""
+    """Hold the PTT key (default Right Ctrl) to record. Calls on_final(text) after release."""
 
     def __init__(
         self,
@@ -32,7 +33,8 @@ class PushToTalk:
         self.on_partial = on_partial or (lambda t: None)
         self.on_error = on_error or (lambda m: print("[voice error]", m))
         self.on_status = on_status or (lambda m: None)
-        self._ctrl = False
+        self._started = 0.0
+        self._too_short = False
         self._recording = False
         self._peak = 0
         self._audio: queue.Queue = queue.Queue()
@@ -50,25 +52,22 @@ class PushToTalk:
 
     # --- hotkey ---------------------------------------------------------
     debug = False
-    _CTRL = (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r)
+    _KEY = getattr(keyboard.Key, config.PTT_KEY)
 
     def _press(self, key) -> None:
         if self.debug:
             print(f"[key down] {key!r}", flush=True)
-        if key in self._CTRL:
-            self._ctrl = True
-        elif key == keyboard.Key.space and self._ctrl and not self._recording:
+        if key == self._KEY and not self._recording:
             self._begin()
 
     def _release(self, key) -> None:
-        if key in self._CTRL:
-            self._ctrl = False
-        if self._recording and (key == keyboard.Key.space or key in self._CTRL):
+        if key == self._KEY and self._recording:
             self._end()
 
     # --- recording ------------------------------------------------------
     def _begin(self) -> None:
         self._recording = True
+        self._started = time.monotonic()
         self._peak = 0
         self._audio = queue.Queue()
         audio = self._audio
@@ -99,11 +98,17 @@ class PushToTalk:
             self._mic.close()
             self._mic = None
         self._audio.put(_END)
+        self._too_short = time.monotonic() - self._started < config.MIN_TALK_S
+        if self._too_short:
+            self.on_status("Too quick. Keep holding the key while you speak.")
+            return
         self.on_status(f"Transcribing... (mic peak {self._peak}/32767)")
         if self._peak < 1000:
             self.on_status("Mic is very quiet - check Windows mic volume / privacy settings.")
 
     def _done(self, fut) -> None:
+        if self._too_short:
+            return
         try:
             text = fut.result()
         except Exception as e:  # noqa: BLE001 - report every failure to the user
@@ -112,7 +117,7 @@ class PushToTalk:
         if text.strip():
             self.on_final(text.strip())
         else:
-            self.on_status("Heard nothing. Hold Ctrl+Space while you speak.")
+            self.on_status("Heard nothing. Hold the key while you speak.")
 
     # --- websocket ------------------------------------------------------
     async def _session(self, audio: queue.Queue) -> str:
@@ -177,7 +182,7 @@ if __name__ == "__main__":
                 ptt._end()
         else:
             ptt.debug = "--debug" in sys.argv
-            print("Ready. Hold Ctrl+Space and speak. Release to finish. Ctrl+C to quit.", flush=True)
+            print(f"Ready. Hold {config.PTT_KEY.upper()} (Right Ctrl) and speak. Let go to finish. Ctrl+C to quit.", flush=True)
             ptt.start()
             ptt.join()
     except KeyboardInterrupt:

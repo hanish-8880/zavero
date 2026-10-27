@@ -19,6 +19,6 @@ copy .env.example .env      # paste your MODEL_API_KEY
 ```bash
 python scripts/test_click.py      # screenshot -> model -> click coordinates
 python scripts/test_telugu.py     # Telugu / Hindi bubble text
-python -m zavero.voice            # hold Ctrl+Space and speak
+python -m zavero.voice            # hold Right Ctrl and speak
 pytest -q
 ```

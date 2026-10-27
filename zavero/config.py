@@ -19,6 +19,10 @@ SCREENSHOT_WIDTH = 1280
 MAX_STEPS = 25
 API_TIMEOUT_S = 60
 
+# Hold this one key to talk. Any pynput Key name: "ctrl_r", "alt_r", "f9", ...
+PTT_KEY = "ctrl_r"
+MIN_TALK_S = 0.4  # shorter presses are treated as accidental
+
 SAMPLE_RATE = 24_000
 LANGUAGE_BIAS = ["English", "Telugu", "Hindi"]
 
