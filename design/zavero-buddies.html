@@ -1,0 +1,814 @@
+<!doctype html>
+<!--
+  Zavero Buddies: six plush blob mascots + chat UI.
+  Single file, plain JS + live SVG. No images, no libraries.
+  Components inside: BUDDIES (definitions), BuddyAvatar, VoiceDots, BuddyChat.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zavero Buddies</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,800&family=Onest:wght@400;500;600&family=Geist:wght@400;500;600&family=Baloo+2:wght@500;700&family=Baloo+Tammudu+2:wght@500;700&family=Baloo+Thambi+2:wght@500;700&family=Baloo+Da+2:wght@500;700&family=Fraunces:opsz,wght@9..144,400;9..144,500&family=Noto+Sans+Telugu:wght@400;600&family=Noto+Sans+Devanagari:wght@400;600&family=Noto+Sans+Tamil:wght@400;600&family=Noto+Sans+Bengali:wght@400;600&display=swap">
+<style>
+  :root {
+    --bg: #FBF6F1; --card: #FFFFFF; --ink: #1E1621; --muted: #6F6473; --line: #EDE4DE;
+    --tile: #F8F2EE; --pill: #EFEDEF; --on-ink: #FFFFFF;
+    --c1: #FFE071; --c2: #FF9A1F; --c3: #F25C05;
+    --indic: "Noto Sans Telugu", "Noto Sans Devanagari", "Noto Sans Tamil", "Noto Sans Bengali";
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141016; --card: #1E1921; --ink: #F5EEF6; --muted: #A99FAE; --line: #2E2732;
+      --tile: #251F29; --pill: #2C2730; --on-ink: #141016; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141016; --card: #1E1921; --ink: #F5EEF6; --muted: #A99FAE; --line: #2E2732;
+    --tile: #251F29; --pill: #2C2730; --on-ink: #141016; color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 "Onest", var(--indic), system-ui, sans-serif;
+  }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 28px 16px 40px; }
+
+  header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
+  h1 { font: 800 clamp(34px, 7vw, 52px)/1 "Bricolage Grotesque", sans-serif; letter-spacing: -0.03em; margin: 0 0 6px; }
+  .sub { margin: 0; color: var(--muted); max-width: 46ch; }
+  .theme { border: 1px solid var(--line); background: var(--card); border-radius: 999px; padding: 7px 14px; font-size: 14px; white-space: nowrap; }
+
+  main { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 22px; align-items: start; }
+  @media (max-width: 880px) { main { grid-template-columns: minmax(0, 1fr); } }
+
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 28px; padding: 22px;
+  }
+  .hero {
+    box-shadow: 0 40px 90px -46px var(--c2), 0 18px 40px -30px color-mix(in srgb, var(--c3) 60%, transparent);
+    transition: box-shadow .5s ease;
+  }
+  .stage {
+    display: grid; place-items: center; padding: 6px 0 0; border-radius: 22px;
+    background: radial-gradient(circle at 50% 46%, color-mix(in srgb, var(--c2) 22%, transparent), transparent 62%);
+    transition: background .5s ease;
+  }
+  .stage svg { width: min(290px, 72vw); height: auto; display: block; cursor: pointer; overflow: visible; }
+
+  /* VoiceDots */
+  .vdots { display: flex; gap: 8px; align-items: center; justify-content: center; height: 48px; }
+  .vdots .dot { width: 14px; height: 14px; border-radius: 999px; background: var(--dot, var(--c2)); will-change: transform, height; }
+  .vdots.typing { justify-content: flex-start; height: 28px; }
+
+  .who { text-align: center; margin: 4px 0 18px; }
+  .who h2 { font: 800 34px/1.05 "Bricolage Grotesque", sans-serif; margin: 0 0 8px; letter-spacing: -0.02em; }
+  .chips { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; }
+  .chip { font-size: 13px; font-weight: 500; padding: 4px 11px; border-radius: 999px; background: color-mix(in srgb, var(--c2) 18%, var(--card)); }
+  .chip.lang { background: transparent; border: 1px solid var(--line); }
+  .trait { color: var(--muted); margin: 10px auto 0; max-width: 40ch; font-size: 15px; }
+
+  .chat-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  .seg { display: flex; flex-wrap: wrap; gap: 2px; padding: 3px; border-radius: 999px; background: var(--tile); border: 1px solid var(--line); }
+  .seg button { border: 0; background: transparent; padding: 5px 11px; border-radius: 999px; font-size: 13px; }
+  .seg button[aria-pressed="true"] { background: var(--card); box-shadow: 0 1px 3px rgb(0 0 0 / .12); font-weight: 600; }
+
+  .moods { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+  .moods button { border: 1px solid var(--line); background: var(--tile); border-radius: 999px; padding: 8px 15px; font-size: 14px; font-weight: 500; }
+  .moods button[aria-pressed="true"] { background: var(--ink); color: var(--on-ink); border-color: var(--ink); }
+  .moods .hello { margin-left: auto; background: var(--c2); border-color: var(--c2); color: #1E1621; font-weight: 600; }
+  @media (max-width: 480px) { .moods .hello { margin-left: 0; } }
+
+  /* BuddyChat */
+  .thread { display: flex; flex-direction: column; gap: 12px; min-height: 178px; padding: 14px; border-radius: 22px; background: var(--tile); border: 1px solid var(--line); }
+  .msg { display: flex; animation: rise .35s ease both; }
+  .msg.user { justify-content: flex-end; }
+  .msg .bubble { max-width: 86%; overflow-wrap: anywhere; }
+  .msg p { margin: 0; }
+  .msg .en { opacity: 0; transition: opacity .6s ease; font-size: .82em; color: var(--muted); margin-top: 4px; }
+  .msg .en.show { opacity: 1; }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+  .thread[data-style="velvet"] { font-family: "Onest", var(--indic), sans-serif; }
+  .thread[data-style="velvet"] .bot .bubble { background: color-mix(in srgb, var(--c2) 17%, var(--card)); padding: 11px 16px; border-radius: 22px 22px 22px 8px; }
+  .thread[data-style="velvet"] .user .bubble { background: var(--ink); color: var(--on-ink); padding: 11px 16px; border-radius: 22px 22px 8px 22px; }
+
+  .thread[data-style="crisp"] { font-family: "Geist", var(--indic), sans-serif; background: var(--card); }
+  .thread[data-style="crisp"] .bot .bubble { padding: 2px 2px; max-width: 100%; }
+  .thread[data-style="crisp"] .user .bubble { background: var(--pill); padding: 9px 16px; border-radius: 20px; }
+
+  .thread[data-style="bubbly"] { font-family: "Baloo 2", "Baloo Tammudu 2", "Baloo Thambi 2", "Baloo Da 2", sans-serif; font-size: 17px; }
+  .thread[data-style="bubbly"] .bubble { padding: 10px 18px 8px; border-radius: 26px; border: 2.5px solid var(--ink); line-height: 1.35; }
+  .thread[data-style="bubbly"] .bot .bubble { background: color-mix(in srgb, var(--c1) 55%, var(--card)); box-shadow: 0 5px 0 var(--c2); color: #1E1621; }
+  .thread[data-style="bubbly"] .bot .en { color: #5b4a52; }
+  .thread[data-style="bubbly"] .user .bubble { background: var(--card); box-shadow: 0 5px 0 var(--c3); }
+
+  .thread[data-style="editorial"] { background: var(--card); }
+  .thread[data-style="editorial"] .bot .bubble { font: 400 25px/1.3 "Fraunces", "Noto Sans Telugu", "Noto Sans Devanagari", "Noto Sans Tamil", "Noto Sans Bengali", serif; letter-spacing: -0.01em; max-width: 100%; }
+  .thread[data-style="editorial"] .bot .en { font: 15px/1.4 "Onest", sans-serif; }
+  .thread[data-style="editorial"] .user .bubble { font-size: 13px; border: 1px solid var(--ink); padding: 4px 12px; border-radius: 999px; }
+
+  /* Picker */
+  .picker h3 { font: 800 22px/1.1 "Bricolage Grotesque", sans-serif; margin: 2px 0 14px; letter-spacing: -0.01em; }
+  .tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  @media (max-width: 640px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .tile {
+    display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 10px 8px 12px;
+    background: var(--tile); border: 2px solid transparent; border-radius: 20px; text-align: center;
+    transition: background .25s, border-color .25s, transform .2s;
+  }
+  .tile:hover { transform: translateY(-2px); }
+  .tile[aria-pressed="true"] { border-color: var(--ink); background: color-mix(in srgb, var(--tc) 16%, var(--card)); }
+  .tile svg { width: 100%; max-width: 118px; height: auto; display: block; overflow: visible; }
+  .tile b { font: 800 17px/1.1 "Bricolage Grotesque", sans-serif; }
+  .tile small { color: var(--muted); font-size: 12px; }
+  footer { margin-top: 18px; text-align: center; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  :focus-visible { outline: 2px solid var(--c3); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>zavero buddies</h1>
+      <p class="sub">Six plush pets that sit beside your chat. They watch, listen, think and talk like little living creatures.</p>
+    </div>
+    <button class="theme" id="theme" type="button">Theme</button>
+  </header>
+
+  <main>
+    <section class="card hero" aria-label="Your buddy">
+      <div class="stage" id="stage"></div>
+      <div id="heroDots"></div>
+      <div class="who">
+        <h2 id="name"></h2>
+        <div class="chips"><span class="chip" id="kind"></span><span class="chip lang" id="lang"></span></div>
+        <p class="trait" id="trait"></p>
+      </div>
+      <div class="chat-head">
+        <span class="label">Chat</span>
+        <div class="seg" id="styles" role="group" aria-label="Text style">
+          <button type="button" data-style="velvet">Velvet</button>
+          <button type="button" data-style="crisp">Crisp</button>
+          <button type="button" data-style="bubbly">Bubbly</button>
+          <button type="button" data-style="editorial">Editorial</button>
+        </div>
+      </div>
+      <div class="thread" id="thread" aria-live="polite"></div>
+      <div class="moods" id="moods" role="group" aria-label="Mood">
+        <button type="button" data-mood="idle">Idle</button>
+        <button type="button" data-mood="listening">Listening</button>
+        <button type="button" data-mood="thinking">Thinking</button>
+        <button type="button" class="hello" id="hello">Say hello</button>
+      </div>
+    </section>
+
+    <section class="card picker" aria-label="Choose your buddy">
+      <h3>Choose your buddy</h3>
+      <div class="tiles" id="tiles"></div>
+    </section>
+  </main>
+  <footer id="fps">&nbsp;</footer>
+</div>
+
+<script>
+'use strict';
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const approach = (v, target, rate, dt) => v + (target - v) * Math.min(1, rate * dt);
+const REDUCED = matchMedia('(prefers-reduced-motion: reduce)');
+const motion = () => (REDUCED.matches ? 0.3 : 1);
+
+/* ------------------------------------------------------------------ buddies */
+// shape(a) -> [x, y] for a in [0, TAU), body centred near (0, 0) in viewBox -150 -170 300 315.
+const BUDDIES = [
+  {
+    id: 'aamu', name: 'Aamu', kind: 'The cheerful helper', lang: 'Telugu', code: 'te',
+    greeting: 'హాయ్! ఈరోజు ఏం నేర్చుకుందాం?', english: 'Hi! What shall we learn today?',
+    trait: 'Bounces with joy at every small win and keeps you smiling.',
+    idle: 'hop', colors: ['#FFE071', '#FF9A1F', '#F25C05'], blush: '#FF5E7E', seed: 1.3,
+    bottom: 104, face: { y: 14, dx: 30 }, extra: 'leaf',
+    shape: a => {
+      const r = 100 * (1 + 0.07 * Math.sin(a));
+      return [r * Math.cos(a) * 0.97 + 6 * Math.sin(2 * a), r * Math.sin(a) * 1.04 + 4];
+    },
+  },
+  {
+    id: 'kamal', name: 'Kamal', kind: 'The calm teacher', lang: 'Hindi', code: 'hi',
+    greeting: 'नमस्ते! धीरे-धीरे, साथ में सीखते हैं।', english: "Namaste! Let's learn together, step by step.",
+    trait: 'Never rushes. Explains each step slowly, as many times as you need.',
+    idle: 'sway', colors: ['#FFD3EA', '#FF82BD', '#D93D88'], blush: '#FFF1F7', seed: 2.1,
+    bottom: 100, face: { y: 14, dx: 30, serene: true },
+    shape: a => {
+      const r = 98 * (1 + 0.085 * Math.cos(5 * (a + Math.PI / 2)));
+      return [r * Math.cos(a), r * Math.sin(a) * 0.98 + 4];
+    },
+  },
+  {
+    id: 'diya', name: 'Diya', kind: 'The quick spark', lang: 'English', code: 'en',
+    greeting: "Let's get it done. Fast!", english: 'Short, snappy steps for busy days.',
+    trait: "Gives you the shortest path. Perfect when you're in a hurry.",
+    idle: 'flicker', colors: ['#FFF0A0', '#FFB224', '#FF5A0A'], blush: '#FF4F5E', seed: 3.7,
+    bottom: 108, face: { y: 42, dx: 26 }, extra: 'glow',
+    shape: a => {
+      const up = Math.max(0, -Math.sin(a));
+      const r = 88 * (1 + 0.85 * up ** 5);
+      return [r * Math.cos(a) + 26 * up ** 4, r * Math.sin(a) + 20];
+    },
+  },
+  {
+    id: 'mor', name: 'Mor', kind: 'The curious explorer', lang: 'Tamil', code: 'ta',
+    greeting: 'வணக்கம்! புதுசா என்ன தேடலாம்?', english: 'Vanakkam! What new thing shall we explore?',
+    trait: 'Loves poking around new apps and showing you their hidden corners.',
+    idle: 'tilt', colors: ['#7DF0DE', '#13AFA0', '#1F5BD6'], blush: '#FF8FB1', seed: 4.4,
+    bottom: 104, face: { y: 10, dx: 32 }, extra: 'tufts',
+    shape: a => {
+      const r = 100 * (1 + 0.035 * Math.cos(2 * a));
+      return [r * Math.cos(a), r * Math.sin(a) + 4];
+    },
+  },
+  {
+    id: 'chai', name: 'Chai', kind: 'The cozy friend', lang: 'Hinglish', code: 'en',
+    greeting: 'Chalo, ek chai break, phir kaam shuru!', english: 'Come on, one chai break, then we start work!',
+    trait: 'Warm, relaxed and patient, like talking to an old friend.',
+    idle: 'puff', colors: ['#FBE0C0', '#DCA066', '#A4612C'], blush: '#F2788C', seed: 5.2,
+    bottom: 96, face: { y: 16, dx: 32 }, extra: 'steam',
+    shape: a => {
+      const k = 1 - 0.85 * Math.max(0, Math.sin(a));
+      const r = 104 * (1 + 0.075 * Math.cos(7 * a + Math.PI / 2) * k);
+      return [r * Math.cos(a), r * Math.sin(a) * 0.86 + 8];
+    },
+  },
+  {
+    id: 'dil', name: 'Dil', kind: 'The kind listener', lang: 'Bengali', code: 'bn',
+    greeting: 'আমি শুনছি, নিশ্চিন্তে বলো।', english: "I'm listening. Tell me, no worries.",
+    trait: 'Listens first, never judges, and keeps you calm when things go wrong.',
+    idle: 'pulse', colors: ['#FFB7C9', '#FF4F7B', '#C3164D'], blush: '#FFD3DE', seed: 6.6,
+    bottom: 99, face: { y: -4, dx: 30 },
+    shape: a => {
+      const s = Math.sin(a);
+      const x = 16 * s * s * s;
+      const y = -(13 * Math.cos(a) - 5 * Math.cos(2 * a) - 2 * Math.cos(3 * a) - Math.cos(4 * a));
+      return [x * 6.4, y * 6.4 - 10];
+    },
+  },
+];
+const BUDDY = Object.fromEntries(BUDDIES.map(b => [b.id, b]));
+const N_POINTS = 64;
+for (const b of BUDDIES) {
+  b.points = Array.from({ length: N_POINTS }, (_, i) => {
+    const a = (i / N_POINTS) * TAU;
+    return [a, ...b.shape(a)];
+  });
+}
+
+/* ------------------------------------------------------------- shared loop */
+const POINTER = { x: 0, y: 0, active: false, speed: 0, last: 0 };
+addEventListener('pointermove', e => {
+  const dtm = (e.timeStamp - POINTER.last) / 1000;
+  if (POINTER.active && dtm > 0.002) {
+    const inst = Math.min(6000, Math.hypot(e.clientX - POINTER.x, e.clientY - POINTER.y) / dtm);
+    POINTER.speed = POINTER.speed * 0.75 + inst * 0.25;
+  }
+  POINTER.x = e.clientX; POINTER.y = e.clientY; POINTER.last = e.timeStamp; POINTER.active = true;
+}, { passive: true });
+document.addEventListener('pointerleave', () => { POINTER.active = false; });
+addEventListener('blur', () => { POINTER.active = false; });
+
+const AVATARS = new Set();
+const DOTS = new Set();
+let frameNo = 0;
+let fpsFrames = 0, fpsStart = performance.now();
+const fpsEl = document.getElementById('fps');
+
+function tick(now) {
+  const t = now / 1000;
+  frameNo++;
+  if (now - POINTER.last > 70) POINTER.speed *= 0.82;
+  // Read every rect first, then write, so the browser never re-lays-out mid-frame.
+  const work = [];
+  for (const a of AVATARS) {
+    if (a.mini && frameNo % 2) continue; // mini tiles: every 2nd frame
+    work.push([a, a.svg.getBoundingClientRect()]);
+  }
+  for (const [a, r] of work) a.frame(t, r);
+  for (const d of DOTS) d.frame(t);
+
+  fpsFrames++;
+  if (now - fpsStart > 1000) {
+    fpsEl.textContent = `${Math.round(fpsFrames * 1000 / (now - fpsStart))} fps · ${AVATARS.size} buddies live`;
+    fpsFrames = 0; fpsStart = now;
+  }
+  requestAnimationFrame(tick);
+}
+
+/* ------------------------------------------------------------ BuddyAvatar */
+let UID = 0;
+const EYE = '#120B1A';
+
+function plushFilter(id, seed) {
+  return `
+  <filter id="${id}" x="-150" y="-170" width="300" height="315" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+    <feTurbulence type="fractalNoise" baseFrequency="1.7" numOctaves="2" seed="${seed}" result="n"/>
+    <feColorMatrix in="n" type="matrix" values="0.4 0 0 0 0.3  0.4 0 0 0 0.3  0.4 0 0 0 0.3  0 0 0 0 1" result="grey"/>
+    <feBlend in="grey" in2="SourceGraphic" mode="overlay" result="fib"/>
+    <feComposite in="fib" in2="SourceAlpha" operator="in" result="fibC"/>
+    <feComposite in="fibC" in2="SourceGraphic" operator="arithmetic" k1="0" k2="0.5" k3="0.5" k4="0" result="tex"/>
+    <feGaussianBlur in="SourceAlpha" stdDeviation="22" result="b22"/>
+    <feOffset in="b22" dx="-12" dy="-18" result="o1"/>
+    <feComposite in="SourceAlpha" in2="o1" operator="out" result="m1"/>
+    <feFlood flood-color="#2A0C1C" flood-opacity="0.55"/>
+    <feComposite in2="m1" operator="in" result="shade"/>
+    <feOffset in="b22" dx="10" dy="15" result="o2"/>
+    <feComposite in="SourceAlpha" in2="o2" operator="out" result="m2"/>
+    <feFlood flood-color="#FFFFFF" flood-opacity="0.28"/>
+    <feComposite in2="m2" operator="in" result="light"/>
+    <feGaussianBlur in="SourceAlpha" stdDeviation="4" result="b4"/>
+    <feComposite in="SourceAlpha" in2="b4" operator="out" result="m3"/>
+    <feFlood flood-color="#FFF6EE" flood-opacity="0.38"/>
+    <feComposite in2="m3" operator="in" result="rim"/>
+    <feMerge result="lit">
+      <feMergeNode in="tex"/><feMergeNode in="shade"/><feMergeNode in="light"/><feMergeNode in="rim"/>
+    </feMerge>
+    <feTurbulence type="fractalNoise" baseFrequency="1.5" numOctaves="1" seed="${seed + 7}" result="n2"/>
+    <feDisplacementMap in="lit" in2="n2" scale="3.5" xChannelSelector="R" yChannelSelector="G"/>
+  </filter>`;
+}
+
+function eyeMarkup(x, y) {
+  return `
+  <g class="eye" transform="translate(${x} ${y})">
+    <g class="open">
+      <ellipse rx="10" ry="14" fill="${EYE}"/>
+      <circle class="spark" cx="-3.2" cy="-5.2" r="3.3" fill="#fff"/>
+    </g>
+    <path class="happy" d="M-10 4 Q0 -9 10 4" fill="none" stroke="${EYE}" stroke-width="5" stroke-linecap="round" opacity="0"/>
+  </g>`;
+}
+
+function extraMarkup(b, u) {
+  const [c1, c2, c3] = b.colors;
+  if (b.extra === 'leaf') return {
+    back: `<g class="leaf"><path d="M-2 6 C-5 -6 -3 -14 4 -20" fill="none" stroke="#6B4A2B" stroke-width="5" stroke-linecap="round"/>
+           <path d="M0 -10 C10 -32 40 -40 60 -28 C44 -8 20 -2 0 -10 Z" fill="url(#leafg-${u})"/></g>`,
+    defs: `<linearGradient id="leafg-${u}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#A6E57E"/><stop offset="1" stop-color="#2F9A47"/></linearGradient>`,
+  };
+  if (b.extra === 'tufts') return {
+    back: [-1, 0, 1].map(i => `
+      <g class="tuft" data-i="${i}">
+        <path d="M0 0 C-3 -14 3 -26 0 -38" fill="none" stroke="${c3}" stroke-width="4" stroke-linecap="round"/>
+        <ellipse cy="-50" rx="11" ry="15" fill="${c2}"/>
+        <ellipse cy="-49" rx="6.5" ry="9" fill="${c3}"/>
+        <circle cy="-48" r="3.2" fill="#F3C64B"/>
+      </g>`).join(''),
+  };
+  if (b.extra === 'steam') return {
+    front: [-26, 0, 26].map((x, i) =>
+      `<path class="steam" data-i="${i}" d="M${x} -96 c8 -10 -8 -20 0 -30 c8 -10 -8 -20 0 -30" fill="none" stroke="${c3}" stroke-width="5" stroke-linecap="round" opacity="0"/>`).join(''),
+  };
+  if (b.extra === 'glow') return {
+    behind: `<circle class="glow" cx="0" cy="6" r="140" fill="url(#glowg-${u})"/>`,
+    defs: `<radialGradient id="glowg-${u}"><stop offset="0" stop-color="${c1}" stop-opacity=".85"/><stop offset=".45" stop-color="${c2}" stop-opacity=".35"/><stop offset="1" stop-color="${c2}" stop-opacity="0"/></radialGradient>`,
+  };
+  return {};
+}
+
+class BuddyAvatar {
+  /** @param {HTMLElement} host  @param {{buddyId:string,size?:number,mood?:string,interactive?:boolean,mini?:boolean,label?:string}} opts */
+  constructor(host, { buddyId, size = 240, mood = 'idle', interactive = true, mini = false, label = '' }) {
+    this.uid = ++UID;
+    this.mood = mood;
+    this.mini = mini;
+    this.svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    this.svg.setAttribute('viewBox', '-150 -170 300 315');
+    this.svg.setAttribute('width', size);
+    this.svg.setAttribute('height', Math.round(size * 315 / 300));
+    this.svg.setAttribute('role', 'img');
+    host.appendChild(this.svg);
+    this.label = label;
+    this.s = { gx: 0, gy: 0, ex: 0, pet: 0, open: 0, lean: 0, twirl: -1, blink: -9, dbl: false, nextBlink: 1 + Math.random() * 3, lastT: 0 };
+    this.setBuddy(buddyId);
+    if (interactive) this.svg.addEventListener('click', () => this.twirl());
+    AVATARS.add(this);
+  }
+
+  setBuddy(id) {
+    const b = this.b = BUDDY[id];
+    const u = this.uid;
+    const [c1, c2, c3] = b.colors;
+    const ex = extraMarkup(b, u);
+    const f = b.face;
+    this.svg.setAttribute('aria-label', this.label || `${b.name}, ${b.kind}`);
+    this.svg.innerHTML = `
+      <defs>
+        <radialGradient id="g-${u}" cx=".38" cy=".32" r=".78">
+          <stop offset="0" stop-color="${c1}"/><stop offset=".45" stop-color="${c2}"/><stop offset="1" stop-color="${c3}"/>
+        </radialGradient>
+        ${plushFilter(`f-${u}`, Math.round(b.seed * 10))}
+        <filter id="soft-${u}" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="13"/></filter>
+        <filter id="blur3-${u}" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3"/></filter>
+        <filter id="shadowblur-${u}" x="-50%" y="-100%" width="200%" height="300%"><feGaussianBlur stdDeviation="5"/></filter>
+        <clipPath id="clip-${u}"><use href="#body-${u}"/></clipPath>
+        ${ex.defs || ''}
+      </defs>
+      <ellipse class="ground" cx="0" cy="${b.bottom + 16}" rx="80" ry="11" fill="#1E1621" opacity=".2" filter="url(#shadowblur-${u})"/>
+      <g class="rig">
+        ${ex.behind || ''}
+        <g filter="url(#f-${u})">
+          ${ex.back || ''}
+          <path id="body-${u}" class="body" fill="url(#g-${u})"/>
+        </g>
+        <ellipse cx="-36" cy="-46" rx="44" ry="28" fill="#fff" opacity=".26" filter="url(#soft-${u})" clip-path="url(#clip-${u})"/>
+        ${ex.front || ''}
+        <g class="face">
+          <ellipse class="blush" cx="${-f.dx - 14}" cy="${f.y + 21}" rx="14" ry="8" fill="${b.blush}" filter="url(#blur3-${u})"/>
+          <ellipse class="blush" cx="${f.dx + 14}" cy="${f.y + 21}" rx="14" ry="8" fill="${b.blush}" filter="url(#blur3-${u})"/>
+          ${eyeMarkup(-f.dx, f.y)}${eyeMarkup(f.dx, f.y)}
+          <path class="smile" d="M-10 ${f.y + 22} Q0 ${f.y + 31} 10 ${f.y + 22}" fill="none" stroke="${EYE}" stroke-width="4.2" stroke-linecap="round"/>
+          <g class="mouth" opacity="0">
+            <ellipse class="mo" cx="0" cy="${f.y + 27}" rx="9" ry="1" fill="#3A0B1F"/>
+            <ellipse class="tongue" cx="0" cy="${f.y + 30}" rx="5.5" ry="1" fill="#FF7C93"/>
+          </g>
+        </g>
+      </g>`;
+    const q = s => this.svg.querySelector(s);
+    const qa = s => [...this.svg.querySelectorAll(s)];
+    this.el = {
+      ground: q('.ground'), rig: q('.rig'), body: q('.body'), face: q('.face'),
+      eyes: qa('.eye'), opens: qa('.eye .open'), happies: qa('.eye .happy'), sparks: qa('.spark'),
+      blush: qa('.blush'), smile: q('.smile'), mouth: q('.mouth'), mo: q('.mo'), tongue: q('.tongue'),
+      leaf: q('.leaf'), tufts: qa('.tuft'), steam: qa('.steam'), glow: q('.glow'),
+    };
+  }
+
+  setMood(m) { this.mood = m; }
+
+  twirl() { this.s.twirl = performance.now() / 1000; }
+
+  frame(t, rect) {
+    if (!rect.width) return;
+    const s = this.s, b = this.b, f = b.face, el = this.el;
+    const dt = clamp(t - (s.lastT || t), 0, 0.1);
+    s.lastT = t;
+    const M = motion();
+    const mood = this.mood;
+
+    // ---- where is the pointer?
+    let tx = 0, ty = 0, dist = Infinity;
+    if (POINTER.active) {
+      const vx = POINTER.x - (rect.left + rect.width / 2);
+      const vy = POINTER.y - (rect.top + rect.height * 0.5);
+      dist = Math.hypot(vx, vy);
+      const k = 1 / (dist + rect.width * 0.5);
+      tx = vx * k; ty = vy * k;
+    }
+    if (mood === 'thinking') { tx = 0.75; ty = -0.85; }
+    s.gx = approach(s.gx, tx, 7, dt);
+    s.gy = approach(s.gy, ty, 7, dt);
+
+    const dancing = POINTER.speed > 1100 && dist < rect.width * 1.7;
+    s.ex = dancing ? approach(s.ex, 1, 6, dt) : approach(s.ex, 0, 1.4, dt);
+    const petting = dist < rect.width * 0.36 && POINTER.speed > 40;
+    s.pet = petting ? approach(s.pet, 1, 5, dt) : approach(s.pet, 0, 1.8, dt);
+
+    // ---- idle personality motion
+    const amp = M * (mood === 'thinking' ? 0.35 : 1);
+    let x = 0, y = 0, rot = 0, sx = 1, sy = 1;
+    switch (b.idle) {
+      case 'hop': {
+        const h = Math.sin(t * TAU / 1.6);
+        if (h > 0) { y = -24 * h; sy = 1 + 0.05 * h; sx = 1 - 0.03 * h; }
+        else { sy = 1 + 0.08 * h; sx = 1 - 0.06 * h; }
+        y *= amp; sx = 1 + (sx - 1) * amp; sy = 1 + (sy - 1) * amp;
+        break;
+      }
+      case 'sway':
+        rot = Math.sin(t * 0.9) * 5 * amp; x = Math.sin(t * 0.9) * 5 * amp;
+        break;
+      case 'flicker': {
+        const n = Math.sin(t * 13) * 0.5 + Math.sin(t * 7.7 + 1) * 0.35 + Math.sin(t * 23) * 0.15;
+        sx = 1 + 0.025 * n * amp; sy = 1 + 0.045 * -n * amp; rot = Math.sin(t * 2.3) * 2.5 * amp;
+        break;
+      }
+      case 'tilt': {
+        const ph = (t / 3.2) % 2;
+        const target = ph < 1 ? 1 : -1;
+        s.lean = approach(s.lean, target, 2.2, dt);
+        rot = s.lean * 9 * amp; y = -Math.abs(Math.sin(t * 1.1)) * 3 * amp;
+        break;
+      }
+      case 'puff': {
+        const br = Math.sin(t * 1.3);
+        sx = 1 + 0.035 * br * amp; sy = 1 + 0.045 * br * amp;
+        break;
+      }
+      case 'pulse': {
+        const p = t % 1.15;
+        const beat = Math.exp(-(((p - 0.08) / 0.05) ** 2)) + 0.7 * Math.exp(-(((p - 0.3) / 0.05) ** 2));
+        sx = sy = 1 + 0.07 * beat * amp;
+        break;
+      }
+    }
+
+    // ---- moods
+    let eyeScale = 1, wob = 0.028, wspeed = 1, talk = 0;
+    if (mood === 'listening') { sx *= 1.05; sy *= 1.05; y += 4 * M; eyeScale = 1.15; wob = 0.05; wspeed = 1.6; }
+    if (mood === 'thinking') { rot += 7 * M; }
+    if (mood === 'talking') {
+      y += Math.sin(t * 8) * 4 * M; wob = 0.04; wspeed = 1.3;
+      talk = clamp(0.12 + 0.88 * Math.max(0, Math.sin(t * 11.5)) * (0.55 + 0.45 * Math.sin(t * 2.7 + 1)), 0, 1);
+    }
+    s.open = approach(s.open, talk, 18, dt);
+
+    // ---- watching, dancing, petting
+    rot += s.gx * 6 * M; x += s.gx * 6 * M;
+    rot += Math.sin(t * 18) * 9 * s.ex * M;
+    y -= Math.abs(Math.sin(t * 9)) * 20 * s.ex * M;
+    sx *= 1 + 0.04 * Math.sin(t * 18) * s.ex * M;
+    rot += Math.sin(t * 14) * 3 * s.pet * M;
+    wob += 0.02 * s.ex;
+
+    // ---- twirl
+    let spin = 1;
+    if (s.twirl >= 0) {
+      const p = (t - s.twirl) / 0.9;
+      if (p >= 1 || p < 0) s.twirl = -1;
+      else {
+        const e = p < 0.5 ? 2 * p * p : 1 - (-2 * p + 2) ** 2 / 2;
+        if (!REDUCED.matches) spin = Math.cos(TAU * e);
+        y -= Math.sin(Math.PI * p) * 30 * M;
+      }
+    }
+
+    // ---- body outline (living wobble)
+    wob *= M;
+    const seed = b.seed, pts = [];
+    for (const [a, px, py] of b.points) {
+      const k = 1 + wob * (Math.sin(3 * a + t * 1.7 * wspeed + seed) + 0.6 * Math.sin(5 * a - t * 2.3 * wspeed + 2 * seed)) / 1.6;
+      pts.push(px * k, py * k);
+    }
+    el.body.setAttribute('d', smoothPath(pts));
+
+    const B = b.bottom;
+    el.rig.setAttribute('transform',
+      `translate(${x.toFixed(2)} ${(y + B).toFixed(2)}) rotate(${rot.toFixed(2)}) scale(${(sx * spin).toFixed(3)} ${sy.toFixed(3)}) translate(0 ${-B})`);
+    const lift = Math.max(0, -y);
+    el.ground.setAttribute('rx', (80 * (1 - Math.min(0.45, lift / 90)) * Math.abs(sx)).toFixed(1));
+    el.ground.setAttribute('opacity', (0.2 * (1 - Math.min(0.6, lift / 100))).toFixed(3));
+    el.ground.setAttribute('cx', (x * 0.5).toFixed(1));
+
+    // ---- face
+    const faceVis = clamp(spin * 4, 0, 1);
+    el.face.setAttribute('opacity', faceVis.toFixed(2));
+    el.face.setAttribute('transform', `translate(${(s.gx * 14 * M).toFixed(2)} ${(s.gy * 10 * M).toFixed(2)})`);
+
+    if (t > s.nextBlink) { s.blink = t; s.dbl = Math.random() < 0.25; s.nextBlink = t + 2 + Math.random() * 3.5; }
+    const d0 = t - s.blink;
+    let closed = d0 < 0.14 ? Math.sin(Math.PI * d0 / 0.14) : 0;
+    if (s.dbl && d0 > 0.24 && d0 < 0.38) closed = Math.sin(Math.PI * (d0 - 0.24) / 0.14);
+
+    const happy = Math.max(s.ex, s.pet) > 0.45;
+    const serene = f.serene && mood !== 'listening' && !happy;
+    const openY = (serene ? 0.5 : 1) * (1 - closed);
+    const ex = s.gx * 7 * M, ey = s.gy * 6 * M;
+    el.eyes.forEach((g, i) => {
+      g.setAttribute('transform', `translate(${(i ? f.dx : -f.dx) + ex} ${f.y + ey + (serene ? 3 : 0)})`);
+    });
+    el.opens.forEach(o => {
+      o.setAttribute('transform', `scale(${eyeScale} ${(eyeScale * Math.max(0.06, openY)).toFixed(3)})`);
+      o.setAttribute('opacity', happy ? 0 : 1);
+    });
+    el.sparks.forEach(sp => sp.setAttribute('opacity', serene ? 0 : 1));
+    el.happies.forEach(h => h.setAttribute('opacity', happy ? 1 : 0));
+    const blushOp = 0.55 + 0.4 * Math.max(s.pet, s.ex);
+    el.blush.forEach(bl => bl.setAttribute('opacity', blushOp.toFixed(2)));
+
+    const open = s.open;
+    el.smile.setAttribute('opacity', open > 0.08 ? 0 : 1);
+    el.mouth.setAttribute('opacity', open > 0.08 ? 1 : 0);
+    if (open > 0.08) {
+      const ry = 2 + 8 * open;
+      el.mo.setAttribute('ry', ry.toFixed(2));
+      el.tongue.setAttribute('ry', (1 + 3.2 * open).toFixed(2));
+      el.tongue.setAttribute('cy', (f.y + 27 + ry * 0.5).toFixed(2));
+    }
+
+    // ---- extras
+    if (el.leaf) el.leaf.setAttribute('transform', `translate(8 -84) rotate(${(-18 + Math.sin(t * 2.2) * 5 * M - s.gx * 6 * M).toFixed(2)})`);
+    el.tufts.forEach(tu => {
+      const i = +tu.dataset.i;
+      const w = Math.sin(t * 5 + i * 1.3) * 7 * M * (1 + s.ex * 1.5);
+      tu.setAttribute('transform', `translate(${i * 22} ${-88 + Math.abs(i) * 6}) rotate(${(i * 22 + w).toFixed(2)})`);
+    });
+    el.steam.forEach(st => {
+      const i = +st.dataset.i;
+      const p = (t * 0.35 + i / 3) % 1;
+      st.setAttribute('transform', `translate(0 ${(-p * 30 * M).toFixed(1)})`);
+      st.setAttribute('opacity', (Math.sin(Math.PI * p) * 0.45).toFixed(3));
+    });
+    if (el.glow) el.glow.setAttribute('opacity', (0.7 + 0.18 * Math.sin(t * 9) * Math.sin(t * 5.3) * M).toFixed(3));
+  }
+}
+
+/** Closed Catmull-Rom spline through flat [x0,y0,x1,y1,...] -> cubic Bezier path. */
+function smoothPath(p) {
+  const n = p.length / 2;
+  const X = i => p[((i + n) % n) * 2], Y = i => p[((i + n) % n) * 2 + 1];
+  let d = `M${X(0).toFixed(1)} ${Y(0).toFixed(1)}`;
+  for (let i = 0; i < n; i++) {
+    const c1x = X(i) + (X(i + 1) - X(i - 1)) / 6, c1y = Y(i) + (Y(i + 1) - Y(i - 1)) / 6;
+    const c2x = X(i + 1) - (X(i + 2) - X(i)) / 6, c2y = Y(i + 1) - (Y(i + 2) - Y(i)) / 6;
+    d += `C${c1x.toFixed(1)} ${c1y.toFixed(1)} ${c2x.toFixed(1)} ${c2y.toFixed(1)} ${X(i + 1).toFixed(1)} ${Y(i + 1).toFixed(1)}`;
+  }
+  return d + 'Z';
+}
+
+/* -------------------------------------------------------------- VoiceDots */
+class VoiceDots {
+  /** @param {HTMLElement} host  @param {{mood?:string,color?:string}} opts  mood: idle|listening|thinking|talking|typing */
+  constructor(host, { mood = 'idle', color = '' } = {}) {
+    this.root = document.createElement('div');
+    this.root.className = 'vdots';
+    this.root.setAttribute('aria-hidden', 'true');
+    this.dots = Array.from({ length: 4 }, () => this.root.appendChild(document.createElement('span')));
+    this.dots.forEach(d => (d.className = 'dot'));
+    host.appendChild(this.root);
+    this.setMood(mood);
+    if (color) this.setColor(color);
+    DOTS.add(this);
+  }
+  setMood(m) {
+    this.mood = m;
+    this.root.classList.toggle('typing', m === 'typing');
+    this.dots.forEach((d, i) => (d.style.display = m === 'typing' && i ? 'none' : ''));
+  }
+  setColor(c) { this.root.style.setProperty('--dot', c); }
+  destroy() { DOTS.delete(this); this.root.remove(); }
+  frame(t) {
+    const M = motion();
+    this.dots.forEach((d, i) => {
+      let h = 14, ty = 0, sc = 1;
+      if (this.mood === 'typing') { if (i) return; sc = 0.75 + 0.3 * Math.sin(t * 4.2) * M; }
+      else if (this.mood === 'listening' || this.mood === 'talking') {
+        const env = Math.max(0, Math.sin(t * 7.3 + i * 1.1) * 0.6 + Math.sin(t * 13.1 + i * 0.7) * 0.4);
+        h = 14 + env * (this.mood === 'listening' ? 30 : 22) * M;
+      } else if (this.mood === 'thinking') { ty = Math.sin(t * 6 - i * 0.9) * 7 * M; }
+      else { sc = 1 + 0.14 * Math.sin(t * 2 - i * 0.55) * M; }
+      d.style.height = `${h.toFixed(1)}px`;
+      d.style.transform = `translateY(${ty.toFixed(1)}px) scale(${sc.toFixed(3)})`;
+    });
+  }
+}
+
+/* --------------------------------------------------------------- BuddyChat */
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const graphemes = (text, lang) => ('Segmenter' in Intl)
+  ? [...new Intl.Segmenter(lang, { granularity: 'grapheme' }).segment(text)].map(s => s.segment)
+  : Array.from(text);
+
+class BuddyChat {
+  /** @param {HTMLElement} host  @param {{style?:string}} opts  style: velvet|crisp|bubbly|editorial */
+  constructor(host, { style = 'velvet' } = {}) {
+    this.host = host;
+    this.run = 0;
+    this.setStyle(style);
+  }
+  setStyle(s) { this.host.dataset.style = s; }
+
+  add(who, html) {
+    const m = document.createElement('div');
+    m.className = `msg ${who}`;
+    m.innerHTML = `<div class="bubble">${html}</div>`;
+    this.host.appendChild(m);
+    return m;
+  }
+
+  /** Replay: user hello -> typing dot -> greeting typed grapheme by grapheme -> English line fades in. */
+  async play(b, { onMood = () => {} } = {}) {
+    const run = ++this.run;
+    const live = () => run === this.run;
+    this.host.replaceChildren();
+    this.add('user', 'Hi! Can you help me today?');
+    await sleep(550); if (!live()) return;
+
+    const pending = this.add('bot', '');
+    const dots = new VoiceDots(pending.firstChild, { mood: 'typing', color: b.colors[1] });
+    onMood('thinking');
+    await sleep(900);
+    dots.destroy();
+    if (!live()) return;
+
+    const bubble = pending.firstChild;
+    bubble.innerHTML = `<p class="native" lang="${b.code}"></p><p class="en" lang="en"></p>`;
+    const native = bubble.firstChild, en = bubble.lastChild;
+    en.textContent = b.english;
+    onMood('talking');
+    let shown = '';
+    for (const g of graphemes(b.greeting, b.code)) {
+      if (!live()) return;
+      shown += g;
+      native.textContent = shown;
+      await sleep(/\s/.test(g) ? 70 : 42);
+    }
+    await sleep(250); if (!live()) return;
+    en.classList.add('show');
+    await sleep(500); if (!live()) return;
+    onMood('idle');
+  }
+}
+
+/* -------------------------------------------------------------------- page */
+const $ = id => document.getElementById(id);
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } },
+};
+
+const hero = new BuddyAvatar($('stage'), { buddyId: 'aamu', size: 290, interactive: true });
+const heroDots = new VoiceDots($('heroDots'));
+const chat = new BuddyChat($('thread'), { style: store.get('zb-style') || 'velvet' });
+const minis = {};
+let current = 'aamu';
+let chatOwnsMood = true;
+
+function setMood(m, fromChat = false) {
+  if (fromChat && !chatOwnsMood) return;
+  hero.setMood(m);
+  heroDots.setMood(m);
+  document.querySelectorAll('#moods [data-mood]').forEach(btn =>
+    btn.setAttribute('aria-pressed', String(btn.dataset.mood === m)));
+}
+
+function select(id, { spin = true } = {}) {
+  current = id;
+  const b = BUDDY[id];
+  const root = document.documentElement.style;
+  b.colors.forEach((c, i) => root.setProperty(`--c${i + 1}`, c));
+  hero.setBuddy(id);
+  heroDots.setColor(b.colors[1]);
+  $('name').textContent = b.name;
+  $('kind').textContent = b.kind;
+  $('lang').textContent = b.lang;
+  $('trait').textContent = b.trait;
+  document.querySelectorAll('.tile').forEach(t => t.setAttribute('aria-pressed', String(t.dataset.id === id)));
+  if (spin) { hero.twirl(); minis[id].twirl(); }
+  sayHello();
+}
+
+function sayHello() {
+  chatOwnsMood = true;
+  chat.play(BUDDY[current], { onMood: m => setMood(m, true) });
+}
+
+for (const b of BUDDIES) {
+  const tile = document.createElement('button');
+  tile.type = 'button';
+  tile.className = 'tile';
+  tile.dataset.id = b.id;
+  tile.style.setProperty('--tc', b.colors[1]);
+  $('tiles').appendChild(tile);
+  minis[b.id] = new BuddyAvatar(tile, { buddyId: b.id, size: 118, interactive: false, mini: true, label: b.name });
+  tile.insertAdjacentHTML('beforeend', `<b>${b.name}</b><small>${b.lang}</small>`);
+  tile.addEventListener('click', () => select(b.id));
+}
+
+document.querySelectorAll('#moods [data-mood]').forEach(btn =>
+  btn.addEventListener('click', () => { chatOwnsMood = false; setMood(btn.dataset.mood); }));
+$('hello').addEventListener('click', () => { hero.twirl(); sayHello(); });
+
+const styleBtns = document.querySelectorAll('#styles button');
+function setStyle(s) {
+  chat.setStyle(s);
+  styleBtns.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.style === s)));
+  store.set('zb-style', s);
+}
+styleBtns.forEach(b => b.addEventListener('click', () => setStyle(b.dataset.style)));
+setStyle(chat.host.dataset.style);
+
+const html = document.documentElement;
+function isDark() { return html.dataset.theme ? html.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches; }
+function paintThemeBtn() { $('theme').textContent = isDark() ? '☀ Light' : '☾ Dark'; }
+const savedTheme = store.get('zb-theme');
+if (savedTheme) html.dataset.theme = savedTheme;
+$('theme').addEventListener('click', () => {
+  html.dataset.theme = isDark() ? 'light' : 'dark';
+  store.set('zb-theme', html.dataset.theme);
+  paintThemeBtn();
+});
+paintThemeBtn();
+
+// Optional deep link for demos: ?buddy=dil&style=bubbly
+const params = new URLSearchParams(location.search);
+if (styleBtns.length && params.has('style')) setStyle(params.get('style'));
+select(BUDDY[params.get('buddy')] ? params.get('buddy') : 'aamu', { spin: false });
+setMood('idle');
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
