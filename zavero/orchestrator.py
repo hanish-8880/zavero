@@ -6,6 +6,7 @@ import time
 from pynput import keyboard, mouse
 
 from zavero import actionlog, config, driver, narrator, safety
+from zavero.phrases import phrase
 from zavero.brain import Brain, Step
 
 # Short spoken commands. Matched as whole words/phrases after lowercasing.
@@ -142,13 +143,13 @@ class Orchestrator:
     # --- the loop -------------------------------------------------------
     def _run(self, task: str) -> None:
         ui = self.ui
-        ui.set_mode.emit("Doing" if self.mode == "do" else "Guide")
-        self._say("Let me look at your screen…", "info")
+        self._set_step(1)
+        self._say(phrase("looking", task), "info")
         actionlog.log("task", text=task, mode=self.mode)
         brain = Brain(task)
         try:
             shot = self._screenshot()
-            result = brain.start(shot)
+            result = self._think(lambda: brain.start(shot))
             while isinstance(result, Step):
                 self._check()
                 if brain.steps > config.MAX_STEPS:
@@ -162,13 +163,14 @@ class Orchestrator:
                 time.sleep(1.0)  # let the screen update
                 self._check()
                 shot = self._screenshot()
-                result = brain.next(step, shot, acked)
+                result = self._think(lambda: brain.next(step, shot, acked))
+                self._set_step(brain.steps)
             ui.go_home.emit()
-            self._say(narrator.narrate("final", task, result), "done")
+            self._say(self._think(lambda: narrator.narrate("final", task, result)), "done")
             actionlog.log("finished", text=result)
         except Cancelled:
             ui.go_home.emit()
-            self._say("Stopped.", "done")
+            self._say(phrase("stopped", task), "done")
             actionlog.log("stopped")
         except GuideEnded as e:
             ui.go_home.emit()
@@ -181,8 +183,20 @@ class Orchestrator:
             self._say(f"Sorry, something went wrong:\n{e}", "error")
             actionlog.log("error", error=str(e))
         finally:
+            ui.set_thinking.emit(False)
             self._waiting = self._asking = False
             actionlog.log("tokens", input=brain.tokens_in, output=brain.tokens_out, steps=brain.steps)
+
+    def _think(self, fn):
+        """Run a slow model call with the avatar's thinking dots on."""
+        self.ui.set_thinking.emit(True)
+        try:
+            return fn()
+        finally:
+            self.ui.set_thinking.emit(False)
+
+    def _set_step(self, n: int) -> None:
+        self.ui.set_mode.emit(f"{'Doing' if self.mode == 'do' else 'Guide'} · Step {n}")
 
     def _screenshot(self):
         """Model screenshot with the avatar blanked out for a moment."""
@@ -217,7 +231,7 @@ class Orchestrator:
         target = self._target(step, shot)
         if target:
             self.ui.point_at.emit(*target)
-        text = narrator.narrate("guide", self.user_text, step.text, step.actions)
+        text = self._think(lambda: narrator.narrate("guide", self.user_text, step.text, step.actions))
         self._say(text, "info")
         actionlog.log("guide", note=step.text, bubble=text, target=target)
         self._guide_target = target
@@ -236,6 +250,10 @@ class Orchestrator:
         self._strikes = self._strikes + 1 if self._off_target else 0
         if self._strikes >= 2:
             raise GuideEnded("clicked elsewhere twice")
+        if self._off_target:
+            self._say(phrase("oops", self.user_text), "warn")
+        elif target:
+            self._say(phrase("great", self.user_text), "done")
         # The user did this step with their own hands, so they have approved it.
         return step.safety_checks
 

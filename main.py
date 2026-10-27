@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon  # noqa: E402
 
 from zavero.orchestrator import Orchestrator  # noqa: E402
 from zavero.overlay import Overlay, avatar_icon  # noqa: E402
+from zavero.phrases import phrase  # noqa: E402
 from zavero.voice import PushToTalk  # noqa: E402
 
 
@@ -64,12 +65,17 @@ def main() -> None:
             overlay.show_text.emit("Listening…", "listen")
         elif msg.startswith("Transcribing"):
             overlay.set_listening.emit(False)
+            overlay.set_thinking.emit(True)
+        elif msg.startswith("Heard nothing"):
+            overlay.set_thinking.emit(False)
+            overlay.show_text.emit(phrase("heard_nothing", orch.user_text), "info")
         elif not msg.startswith("Mic"):
             overlay.show_text.emit(msg, "info")
 
     def on_final(text: str) -> None:
         print(f">> {text}", flush=True)
         overlay.set_listening.emit(False)
+        overlay.set_thinking.emit(False)
         overlay.show_text.emit(f"“{text}”", "listen")
         orch.on_transcript(text)
 
@@ -81,7 +87,7 @@ def main() -> None:
     )
     ptt.start()
 
-    overlay.show_text.emit("Hi! I'm **Zavero**. Hold **Right Ctrl** and tell me what you want to do.", "info")
+    overlay.show_text.emit(phrase("welcome"), "info")
     if args.task:
         QTimer.singleShot(800, lambda: orch.start(args.task, "do" if args.do else "guide"))
 

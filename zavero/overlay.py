@@ -22,7 +22,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import QApplication, QWidget
 
 R = 26  # avatar radius
-BUBBLE_W = 340
+BUBBLE_W = 380
 FONT = "Nirmala UI"  # ships with Windows; covers Telugu, Devanagari and Latin
 
 ACCENT = QColor("#6D4AFF")
@@ -74,6 +74,7 @@ class Overlay(QWidget):
     go_home = pyqtSignal()             # avatar back to its corner, no target
     set_listening = pyqtSignal(bool)
     set_mode = pyqtSignal(str)         # "Guide" / "Doing" / ...
+    set_thinking = pyqtSignal(bool)    # thinking dots while waiting for the model
     hide_text = pyqtSignal()
     _capture_sig = pyqtSignal(bool)    # blocking: hide/show around model screenshots
 
@@ -92,6 +93,7 @@ class Overlay(QWidget):
         self.setGeometry(screen.geometry())
 
         self._home = QPointF(self.width() - 70, self.height() - 130)
+        self._thinking = False
         self._avatar = QPointF(self._home)
         self._target: QPointF | None = None
         self._text = ""
@@ -116,6 +118,7 @@ class Overlay(QWidget):
         self.go_home.connect(self._on_home)
         self.set_listening.connect(self._on_listening)
         self.set_mode.connect(self._on_mode)
+        self.set_thinking.connect(self._on_thinking)
         self.hide_text.connect(lambda: self._on_text("", self._mood))
         self._invisible = False
         self._capture_sig.connect(self._set_invisible, Qt.ConnectionType.BlockingQueuedConnection)
@@ -176,6 +179,10 @@ class Overlay(QWidget):
 
     def _on_listening(self, on: bool) -> None:
         self._listening = on
+        self.update()
+
+    def _on_thinking(self, on: bool) -> None:
+        self._thinking = on
         self.update()
 
     def _on_mode(self, mode: str) -> None:
@@ -293,6 +300,14 @@ class Overlay(QWidget):
                 p.drawEllipse(eye, 6, 7)
                 p.setBrush(QColor("#1E1B4B"))
                 p.drawEllipse(eye + look, 3, 3.5)
+        if self._thinking:  # three bouncing dots above the head
+            for k in range(3):
+                dy = -abs(math.sin(self._t * 6 + k * 0.7)) * 6
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(255, 255, 255, 235))
+                p.drawEllipse(c + QPointF(-12 + k * 12, -R - 14 + dy), 5, 5)
+                p.setBrush(mood)
+                p.drawEllipse(c + QPointF(-12 + k * 12, -R - 14 + dy), 3, 3)
         # smile
         smile = QPen(QColor("white"), 2.2)
         smile.setCapStyle(Qt.PenCapStyle.RoundCap)
@@ -302,13 +317,13 @@ class Overlay(QWidget):
 
     def _paint_bubble(self, p: QPainter) -> None:
         doc = QTextDocument()
-        doc.setDefaultFont(QFont(FONT, 12))
+        doc.setDefaultFont(QFont(FONT, 14))
         doc.setDocumentMargin(0)
         doc.setHtml(f"<div style='color:#111827'>{to_html(self._text)}</div>")
         doc.setTextWidth(BUBBLE_W - 32)
-        w = min(BUBBLE_W, doc.idealWidth() + 32)
+        w = max(200, min(BUBBLE_W, doc.idealWidth() + 32))  # wide enough for the header
         doc.setTextWidth(w - 32)
-        h = doc.size().height() + 48  # text + header + padding
+        h = doc.size().height() + 52  # text + header + padding
         rect = self._bubble_rect(w, h)
 
         mood = MOODS.get(self._mood, ACCENT)
@@ -320,11 +335,11 @@ class Overlay(QWidget):
         p.drawRoundedRect(rect, 14, 14)
         # header chip: "ZAVERO · GUIDE"
         p.setPen(mood)
-        p.setFont(QFont(FONT, 8, QFont.Weight.Bold))
+        p.setFont(QFont(FONT, 9, QFont.Weight.Bold))
         p.drawText(QRectF(rect.x() + 16, rect.y() + 8, w - 32, 18), Qt.AlignmentFlag.AlignLeft,
                    f"ZAVERO · {self._mode.upper()}")
         p.save()
-        p.translate(rect.x() + 16, rect.y() + 30)
+        p.translate(rect.x() + 16, rect.y() + 34)
         doc.drawContents(p)
         p.restore()
 

@@ -69,7 +69,11 @@ class PushToTalk:
     # --- recording ------------------------------------------------------
     def _begin(self) -> None:
         self._recording = True
-        self._started = time.monotonic()
+        self._started = started = time.monotonic()
+        # Safety net: finish by itself if the key is somehow never released.
+        auto = threading.Timer(config.MAX_TALK_S, lambda: self._recording and self._started == started and self._end())
+        auto.daemon = True
+        auto.start()
         self._peak = 0
         self._audio = queue.Queue()
         audio = self._audio
