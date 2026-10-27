@@ -137,7 +137,7 @@ class Orchestrator:
         actionlog.log("task", text=task, mode=self.mode)
         brain = Brain(task)
         try:
-            shot = driver.screenshot()
+            shot = self._screenshot()
             result = brain.start(shot)
             while isinstance(result, Step):
                 self._check()
@@ -151,7 +151,7 @@ class Orchestrator:
                     acked = self._do(step, shot)
                 time.sleep(1.0)  # let the screen update
                 self._check()
-                shot = driver.screenshot()
+                shot = self._screenshot()
                 result = brain.next(step, shot, acked)
             ui.go_home.emit()
             self._say(narrator.narrate("final", task, result), "done")
@@ -167,6 +167,14 @@ class Orchestrator:
         finally:
             self._waiting = self._asking = False
             actionlog.log("tokens", input=brain.tokens_in, output=brain.tokens_out, steps=brain.steps)
+
+    def _screenshot(self):
+        """Model screenshot with the avatar blanked out for a moment."""
+        self.ui.hide_for_capture()
+        try:
+            return driver.screenshot()
+        finally:
+            self.ui.show_after_capture()
 
     def _check(self) -> None:
         if self._cancel.is_set():

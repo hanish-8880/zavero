@@ -2,7 +2,8 @@
 
 Other threads drive it only through the signals (thread-safe). Coordinates passed in are
 real screen pixels (what driver.to_screen returns); the overlay converts them to Qt pixels.
-The window is excluded from screen capture, so the model never sees the avatar.
+The overlay blanks itself for a moment around each model screenshot, so the model never sees
+the avatar, but screen recordings (demo video) still do.
 
 Preview without the rest of the app:
     python -m zavero.overlay
@@ -12,6 +13,7 @@ import html
 import math
 import re
 import sys
+import time
 
 from PyQt6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QTimer, QVariantAnimation, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QRadialGradient, QTextDocument
@@ -47,6 +49,7 @@ class Overlay(QWidget):
     set_listening = pyqtSignal(bool)
     set_mode = pyqtSignal(str)         # "Guide" / "Doing" / ...
     hide_text = pyqtSignal()
+    _capture_sig = pyqtSignal(bool)    # blocking: hide/show around model screenshots
 
     def __init__(self) -> None:
         super().__init__(
@@ -88,6 +91,8 @@ class Overlay(QWidget):
         self.set_listening.connect(self._on_listening)
         self.set_mode.connect(self._on_mode)
         self.hide_text.connect(lambda: self._on_text("", self._mood))
+        self._invisible = False
+        self._capture_sig.connect(self._set_invisible, Qt.ConnectionType.BlockingQueuedConnection)
 
     # --- window setup ---------------------------------------------------
     def showEvent(self, event) -> None:
@@ -96,9 +101,20 @@ class Overlay(QWidget):
             hwnd = int(self.winId())
             user32 = ctypes.windll.user32
             ex = user32.GetWindowLongW(hwnd, -20)  # GWL_EXSTYLE
-            # WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE: clicks pass through, never steals focus
-            user32.SetWindowLongW(hwnd, -20, ex | 0x20 | 0x80000 | 0x08000000)
-            user32.SetWindowDisplayAffinity(hwnd, 0x11)  # WDA_EXCLUDEFROMCAPTURE
+            # WS_EX_TRANSPARENT | WS_EX_NOACTIVATE: clicks pass through, never steals focus
+            user32.SetWindowLongW(hwnd, -20, ex | 0x20 | 0x08000000)
+
+    def _set_invisible(self, on: bool) -> None:
+        self._invisible = on
+        self.repaint()
+
+    def hide_for_capture(self) -> None:
+        """Call from a worker thread right before a model screenshot. Blocks until hidden."""
+        self._capture_sig.emit(True)
+        time.sleep(0.08)  # let Windows redraw the screen without us
+
+    def show_after_capture(self) -> None:
+        self._capture_sig.emit(False)
 
     def local(self, x: int, y: int) -> QPointF:
         """Real screen px -> overlay px."""
@@ -155,6 +171,8 @@ class Overlay(QWidget):
     # --- painting -------------------------------------------------------
     def paintEvent(self, event) -> None:
         p = QPainter(self)
+        if self._invisible:
+            return
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         if self._target is not None:
             self._paint_target(p)
