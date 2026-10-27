@@ -47,6 +47,10 @@ class Cancelled(Exception):
     pass
 
 
+class GuideEnded(Exception):
+    """The user stopped following the guide (walked away or is doing something else)."""
+
+
 class Orchestrator:
     """One task at a time. Guide mode by default; 'do it' switches to do mode."""
 
@@ -62,6 +66,9 @@ class Orchestrator:
         self._answer: bool | None = None
         self._answered = threading.Event()
         self._say_seq = 0
+        self._guide_target: tuple[int, int] | None = None
+        self._off_target = False
+        self._strikes = 0
         mouse.Listener(on_click=self._on_click).start()
         keyboard.Listener(on_press=self._on_key).start()
 
@@ -107,6 +114,8 @@ class Orchestrator:
 
     def _on_click(self, x, y, button, pressed) -> None:
         if pressed and self._waiting:
+            t = self._guide_target
+            self._off_target = bool(t) and (x - t[0]) ** 2 + (y - t[1]) ** 2 > config.CLICK_RADIUS ** 2
             self._acted.set()
 
     def _on_key(self, key) -> None:
@@ -126,6 +135,7 @@ class Orchestrator:
         self.user_text = text
         self.mode = mode
         self._cancel.clear()
+        self._strikes = 0
         self._worker = threading.Thread(target=self._run, args=(text,), daemon=True)
         self._worker.start()
 
@@ -158,8 +168,14 @@ class Orchestrator:
             actionlog.log("finished", text=result)
         except Cancelled:
             ui.go_home.emit()
-            self._say("Stopped.", "info")
+            self._say("Stopped.", "done")
             actionlog.log("stopped")
+        except GuideEnded as e:
+            ui.go_home.emit()
+            note = ("The user stopped following the steps, so you paused the guide. "
+                    "Tell them kindly to hold Right Ctrl whenever they need help again.")
+            self._say(narrator.narrate("final", task, note), "done")
+            actionlog.log("guide_ended", reason=str(e))
         except Exception as e:  # noqa: BLE001 - show every problem to the user
             ui.go_home.emit()
             self._say(f"Sorry, something went wrong:\n{e}", "error")
@@ -204,13 +220,22 @@ class Orchestrator:
         text = narrator.narrate("guide", self.user_text, step.text, step.actions)
         self._say(text, "info")
         actionlog.log("guide", note=step.text, bubble=text, target=target)
+        self._guide_target = target
+        self._off_target = False
         self._acted.clear()
         self._waiting = True
-        self._acted.wait()
+        acted = self._acted.wait(config.GUIDE_IDLE_S)
         self._waiting = False
+        self._guide_target = None
         self._check()
         if self.mode == "do":
             return None
+        if not acted:
+            raise GuideEnded("no response")
+        # Clicks far from the ring mean the user is busy with something else.
+        self._strikes = self._strikes + 1 if self._off_target else 0
+        if self._strikes >= 2:
+            raise GuideEnded("clicked elsewhere twice")
         # The user did this step with their own hands, so they have approved it.
         return step.safety_checks
 

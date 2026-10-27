@@ -17,6 +17,8 @@ MODEL_SAM = "sam-3.1"
 
 SCREENSHOT_WIDTH = 1280
 MAX_STEPS = 25
+GUIDE_IDLE_S = 120  # guide mode gives up if the user does nothing for this long
+CLICK_RADIUS = 90  # real px: a click this close to the ring counts as following the guide
 API_TIMEOUT_S = 60
 
 # Hold this one key to talk. Any pynput Key name: "ctrl_r", "alt_r", "f9", ...

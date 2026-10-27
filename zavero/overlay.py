@@ -160,6 +160,8 @@ class Overlay(QWidget):
     def _on_text(self, text: str, mood: str) -> None:
         self._text, self._mood = text, mood
         self.update()
+        if mood == "done" and text:  # finished messages fade away on their own
+            QTimer.singleShot(10_000, lambda: self._text == text and self._on_text("", mood))
 
     def _on_point(self, x: int, y: int) -> None:
         self._target = self.local(x, y)
