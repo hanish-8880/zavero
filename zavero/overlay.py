@@ -103,6 +103,15 @@ class Overlay(QWidget):
             ex = user32.GetWindowLongW(hwnd, -20)  # GWL_EXSTYLE
             # WS_EX_TRANSPARENT | WS_EX_NOACTIVATE: clicks pass through, never steals focus
             user32.SetWindowLongW(hwnd, -20, ex | 0x20 | 0x08000000)
+            self._hwnd = hwnd
+            self._raise_timer = QTimer(self)
+            self._raise_timer.timeout.connect(self._stay_on_top)
+            self._raise_timer.start(1000)
+
+    def _stay_on_top(self) -> None:
+        """Other always-on-top windows can cover us; push back to the top without taking focus."""
+        # HWND_TOPMOST, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW
+        ctypes.windll.user32.SetWindowPos(self._hwnd, -1, 0, 0, 0, 0, 0x0002 | 0x0001 | 0x0010 | 0x0040)
 
     def _set_invisible(self, on: bool) -> None:
         self._invisible = on
