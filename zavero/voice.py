@@ -48,7 +48,9 @@ class PushToTalk:
         self._listener.start()
 
     def join(self) -> None:
-        self._listener.join()
+        """Block until the listener stops. Short waits so Ctrl+C still works on Windows."""
+        while self._listener.is_alive():
+            self._listener.join(0.2)
 
     # --- hotkey ---------------------------------------------------------
     debug = False
