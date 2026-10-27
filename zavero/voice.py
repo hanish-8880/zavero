@@ -49,16 +49,21 @@ class PushToTalk:
         self._listener.join()
 
     # --- hotkey ---------------------------------------------------------
+    debug = False
+    _CTRL = (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r)
+
     def _press(self, key) -> None:
-        if key in (keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+        if self.debug:
+            print(f"[key down] {key!r}", flush=True)
+        if key in self._CTRL:
             self._ctrl = True
         elif key == keyboard.Key.space and self._ctrl and not self._recording:
             self._begin()
 
     def _release(self, key) -> None:
-        if key in (keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+        if key in self._CTRL:
             self._ctrl = False
-        if self._recording and key in (keyboard.Key.space, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+        if self._recording and (key == keyboard.Key.space or key in self._CTRL):
             self._end()
 
     # --- recording ------------------------------------------------------
@@ -154,14 +159,26 @@ class PushToTalk:
 
 
 if __name__ == "__main__":
-    print("Hold Ctrl+Space and speak. Release to finish. Ctrl+C to quit.")
+    import sys
+
     ptt = PushToTalk(
-        on_final=lambda t: print(f"\r>> {t}" + " " * 20),
+        on_final=lambda t: print(f"\r>> {t}" + " " * 20, flush=True),
         on_partial=lambda t: print(f"\r.. {t}", end="", flush=True),
         on_status=lambda m: print(f"\n[{m}]", flush=True),
     )
-    ptt.start()
     try:
-        ptt.join()
+        if "--enter" in sys.argv:
+            # No hotkey: Enter to start, Enter to stop. Isolates mic + server from the hotkey.
+            print("Press Enter to start talking, Enter again to stop. Ctrl+C to quit.", flush=True)
+            while True:
+                input()
+                ptt._begin()
+                input()
+                ptt._end()
+        else:
+            ptt.debug = "--debug" in sys.argv
+            print("Ready. Hold Ctrl+Space and speak. Release to finish. Ctrl+C to quit.", flush=True)
+            ptt.start()
+            ptt.join()
     except KeyboardInterrupt:
         pass
