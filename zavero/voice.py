@@ -26,12 +26,15 @@ class PushToTalk:
         on_final: Callable[[str], None],
         on_partial: Callable[[str], None] | None = None,
         on_error: Callable[[str], None] | None = None,
+        on_status: Callable[[str], None] | None = None,
     ):
         self.on_final = on_final
         self.on_partial = on_partial or (lambda t: None)
         self.on_error = on_error or (lambda m: print("[voice error]", m))
+        self.on_status = on_status or (lambda m: None)
         self._ctrl = False
         self._recording = False
+        self._peak = 0
         self._audio: queue.Queue = queue.Queue()
         self._mic: sd.InputStream | None = None
         self._loop = asyncio.new_event_loop()
@@ -61,14 +64,26 @@ class PushToTalk:
     # --- recording ------------------------------------------------------
     def _begin(self) -> None:
         self._recording = True
+        self._peak = 0
         self._audio = queue.Queue()
         audio = self._audio
+
+        def on_audio(data, frames, t, status) -> None:
+            self._peak = max(self._peak, int(abs(data).max()))
+            audio.put(bytes(data))
+
         # Start the mic right away so the first words aren't lost while the socket connects.
-        self._mic = sd.InputStream(
-            samplerate=config.SAMPLE_RATE, channels=1, dtype="int16", blocksize=BLOCK,
-            callback=lambda data, frames, t, status: audio.put(bytes(data)),
-        )
-        self._mic.start()
+        try:
+            self._mic = sd.InputStream(
+                samplerate=config.SAMPLE_RATE, channels=1, dtype="int16", blocksize=BLOCK,
+                callback=on_audio,
+            )
+            self._mic.start()
+        except Exception as e:  # noqa: BLE001
+            self._recording = False
+            self.on_error(f"Microphone failed: {e}")
+            return
+        self.on_status("Listening...")
         fut = asyncio.run_coroutine_threadsafe(self._session(audio), self._loop)
         fut.add_done_callback(self._done)
 
@@ -79,6 +94,9 @@ class PushToTalk:
             self._mic.close()
             self._mic = None
         self._audio.put(_END)
+        self.on_status(f"Transcribing... (mic peak {self._peak}/32767)")
+        if self._peak < 1000:
+            self.on_status("Mic is very quiet - check Windows mic volume / privacy settings.")
 
     def _done(self, fut) -> None:
         try:
@@ -88,6 +106,8 @@ class PushToTalk:
             return
         if text.strip():
             self.on_final(text.strip())
+        else:
+            self.on_status("Heard nothing. Hold Ctrl+Space while you speak.")
 
     # --- websocket ------------------------------------------------------
     async def _session(self, audio: queue.Queue) -> str:
@@ -138,6 +158,7 @@ if __name__ == "__main__":
     ptt = PushToTalk(
         on_final=lambda t: print(f"\r>> {t}" + " " * 20),
         on_partial=lambda t: print(f"\r.. {t}", end="", flush=True),
+        on_status=lambda m: print(f"\n[{m}]", flush=True),
     )
     ptt.start()
     try:
