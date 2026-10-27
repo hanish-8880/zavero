@@ -67,7 +67,7 @@ def screenshot(monitor: int = 1) -> Shot:
     import mss
 
     set_dpi_aware()
-    with mss.mss() as sct:
+    with mss.MSS() as sct:
         mon = sct.monitors[monitor]
         raw = sct.grab(mon)
     img = Image.frombytes("RGB", raw.size, raw.rgb)
