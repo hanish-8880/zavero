@@ -1,9 +1,12 @@
-"""Transparent, click-through, always-on-top overlay: Zavero's avatar (Chai), speech bubble and target ring.
+"""Transparent, always-on-top overlay: Zavero's avatar (Chai), glass speech bubble and target ring.
 
 Other threads drive it only through the signals (thread-safe). Coordinates passed in are
 real screen pixels (what driver.to_screen returns); the overlay converts them to Qt pixels.
 The overlay blanks itself for a moment around each model screenshot, so the model never sees
 the avatar, but screen recordings (demo video) still do.
+
+Clicks pass straight through the full-screen overlay. Chai itself lives in a small separate
+window on top, so it can be dragged anywhere (that spot becomes its new home) or clicked to twirl.
 
 Preview without the rest of the app:
     python -m zavero.overlay
@@ -18,21 +21,22 @@ import time
 
 from PyQt6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QTimer, QVariantAnimation, pyqtSignal
 from PyQt6.QtGui import (
-    QBrush, QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient, QTextDocument,
+    QBrush, QColor, QCursor, QFont, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPen,
+    QPixmap, QRadialGradient, QTextDocument, QTransform,
 )
 from PyQt6.QtWidgets import QApplication, QWidget
 
 R = 32  # avatar radius
-BUBBLE_W = 380
-FONT = "Nirmala UI"  # ships with Windows; covers Telugu, Devanagari and Latin
+BUBBLE_W = 290
+FONTS = ["Segoe UI Variable Text", "Segoe UI", "Nirmala UI"]  # Nirmala UI covers Telugu + Devanagari
 
-CHAI = (QColor("#FBE0C0"), QColor("#DCA066"), QColor("#A4612C"))  # light, mid, dark caramel
+CHAI = (QColor("#F7DDBD"), QColor("#D59A62"), QColor("#9C5B2A"))  # light, mid, dark caramel
 EYE = QColor("#120B1A")
-BLUSH = QColor("#F2788C")
+BLUSH = QColor("#EE7A8C")
 ACCENT = QColor("#B8733A")
 MOODS = {
     "info": QColor("#B8733A"),
-    "listen": QColor("#00A3FF"),
+    "listen": QColor("#0A84FF"),
     "warn": QColor("#F59E0B"),
     "done": QColor("#16A34A"),
     "error": QColor("#DC2626"),
@@ -47,6 +51,16 @@ def to_html(text: str) -> str:
     return t.replace("\n", "<br>")
 
 
+def ui_font(pt: float, bold: bool = False) -> QFont:
+    f = QFont()
+    f.setFamilies(FONTS)
+    f.setPointSizeF(pt)
+    if bold:
+        f.setWeight(QFont.Weight.DemiBold)
+    return f
+
+
+# --- Chai, the wool-felt buddy ------------------------------------------------
 def _chai_point(a: float) -> tuple[float, float]:
     """Chai's cloud outline in design units (about 208 wide), same shape as design/zavero-buddies.html."""
     k = 1 - 0.85 * max(0.0, math.sin(a))  # bumps fade out towards the flat bottom
@@ -56,6 +70,43 @@ def _chai_point(a: float) -> tuple[float, float]:
 
 _CHAI_PTS = [(a, *_chai_point(a)) for a in (i / 64 * math.tau for i in range(64))]
 _BOTTOM = 96  # lowest point of the cloud, used as the squash anchor
+_rnd = random.Random(11)
+# Stray fibres on the fuzzy edge: (position along segment, angle jitter, length, light?) - fixed, so no flicker.
+_EDGE = [[(k / 4 + _rnd.uniform(-0.1, 0.1), _rnd.uniform(-0.6, 0.6), _rnd.uniform(1.0, 2.8), _rnd.random() < 0.55)
+          for k in range(4)] for _ in _CHAI_PTS]
+_FELT: QImage | None = None
+
+
+def _felt_tile() -> QImage:
+    """Dense tiny wool fibres on a transparent tile. Made once (seeded) and tiled over the body."""
+    global _FELT
+    if _FELT is None:
+        size = 96
+        screen = QApplication.primaryScreen()
+        dpr = screen.devicePixelRatio() if screen else 1.0
+        img = QImage(int(size * dpr), int(size * dpr), QImage.Format.Format_ARGB32_Premultiplied)
+        img.setDevicePixelRatio(dpr)
+        img.fill(Qt.GlobalColor.transparent)
+        p = QPainter(img)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rnd = random.Random(7)
+        for _ in range(2600):
+            x, y = rnd.uniform(0, size), rnd.uniform(0, size)
+            ang, ln = rnd.uniform(0, math.tau), rnd.uniform(1.0, 2.8)
+            if rnd.random() < 0.5:
+                col = QColor(255, 248, 236, rnd.randint(30, 70))
+            else:
+                col = QColor(80, 40, 12, rnd.randint(25, 55))
+            pen = QPen(col, rnd.uniform(0.4, 0.75))
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            dx, dy = math.cos(ang) * ln, math.sin(ang) * ln
+            for ox in (-size, 0, size):  # wrap around so the tile is seamless
+                for oy in (-size, 0, size):
+                    p.drawLine(QPointF(x + ox, y + oy), QPointF(x + ox + dx, y + oy + dy))
+        p.end()
+        _FELT = img
+    return _FELT
 
 
 def _smooth(pts: list[tuple[float, float]]) -> QPainterPath:
@@ -74,8 +125,9 @@ def _smooth(pts: list[tuple[float, float]]) -> QPainterPath:
 
 def paint_chai(p: QPainter, c: QPointF, size: float, t: float, look: QPointF = QPointF(),
                listening: bool = False, happy: bool = False, eye_open: float = 1.0,
-               steam: bool = True) -> None:
-    """Draw Chai, the caramel cloud buddy, centred at c. size ~ body radius in px; look in [-1, 1]."""
+               steam: bool = True, rot: float = 0.0, spin: float = 1.0) -> None:
+    """Draw Chai centred at c. size ~ body radius in px; look in [-1, 1]; rot in degrees;
+    spin = horizontal scale during a twirl (face hidden when < 0)."""
     s = size / 104
     breathe = math.sin(t * 1.3)
     sx, sy, wob, eye_scale = 1 + 0.035 * breathe, 1 + 0.045 * breathe, 0.028, 1.0
@@ -83,14 +135,15 @@ def paint_chai(p: QPainter, c: QPointF, size: float, t: float, look: QPointF = Q
         sx, sy, wob, eye_scale = sx * 1.05, sy * 1.05, 0.05, 1.15
     p.save()
     p.translate(c.x(), c.y() + _BOTTOM * s)
-    p.scale(s * sx, s * sy)
+    p.rotate(rot)
+    p.scale(s * sx * spin, s * sy)
     p.translate(0, -_BOTTOM)
 
-    if steam:  # three wisps rising from the cup-warm head
+    if steam:  # three soft wisps rising from the warm head
         for i, x in enumerate((-26, 0, 26)):
             ph = (t * 0.35 + i / 3) % 1
             col = QColor(CHAI[2])
-            col.setAlphaF(math.sin(math.pi * ph) * 0.55)
+            col.setAlphaF(math.sin(math.pi * ph) * 0.5)
             pen = QPen(col, 7)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             p.setPen(pen)
@@ -101,68 +154,102 @@ def paint_chai(p: QPainter, c: QPointF, size: float, t: float, look: QPointF = Q
             wisp.cubicTo(QPointF(x + 8, y0 - 40), QPointF(x - 8, y0 - 50), QPointF(x, y0 - 60))
             p.drawPath(wisp)
 
-    # body: living outline + caramel gradient + soft plush shading
+    # body: living outline, matte caramel wool
     speed = 1.6 if listening else 1.0
     pts = []
     for a, x, y in _CHAI_PTS:
         k = 1 + wob * (math.sin(3 * a + t * 1.7 * speed + 5.2) + 0.6 * math.sin(5 * a - t * 2.3 * speed + 10.4)) / 1.6
         pts.append((x * k, y * k))
     body = _smooth(pts)
-    g = QRadialGradient(QPointF(-27, -27), 165)
-    for stop, col in zip((0, 0.45, 1), CHAI):
+    p.setPen(Qt.PenStyle.NoPen)
+    g = QRadialGradient(QPointF(-22, -30), 175)
+    for stop, col in zip((0, 0.5, 1), CHAI):
         g.setColorAt(stop, col)
     p.setBrush(QBrush(g))
-    p.setPen(QPen(QColor(255, 255, 255, 210), 6))  # sticker edge so Chai shows on dark screens too
     p.drawPath(body)
-    p.setPen(Qt.PenStyle.NoPen)
-    shade = QRadialGradient(QPointF(-22, -30), 150)
-    shade.setColorAt(0.6, QColor(0, 0, 0, 0))
-    shade.setColorAt(1, QColor(60, 25, 10, 90))
+    shade = QRadialGradient(QPointF(-18, -26), 150)  # soft 3D: darker towards the lower edge
+    shade.setColorAt(0.55, QColor(0, 0, 0, 0))
+    shade.setColorAt(1, QColor(70, 30, 8, 95))
     p.setBrush(QBrush(shade))
     p.drawPath(body)
-    hl = QRadialGradient(QPointF(-36, -40), 50)
-    hl.setColorAt(0, QColor(255, 255, 255, 95))
-    hl.setColorAt(1, QColor(255, 255, 255, 0))
-    p.setBrush(QBrush(hl))
-    p.drawEllipse(QPointF(-36, -40), 50, 34)
+    light = QRadialGradient(QPointF(-40, -46), 70)  # broad matte light, no glossy shine
+    light.setColorAt(0, QColor(255, 250, 240, 55))
+    light.setColorAt(1, QColor(255, 250, 240, 0))
+    p.setBrush(QBrush(light))
+    p.drawPath(body)
 
-    # face slides toward where Chai is looking; a bit bigger than the design so it reads when small
-    p.translate(look.x() * 12, 16 + look.y() * 8)
-    p.scale(1.25, 1.25)
-    blush = QColor(BLUSH)
-    blush.setAlpha(150 if happy else 110)
-    p.setBrush(blush)
-    for bx in (-46, 46):
-        p.drawEllipse(QPointF(bx, 21), 14, 8)
-    for ex in (-32, 32):
-        eye = QPointF(ex + look.x() * 6, look.y() * 5)
-        if happy:
-            pen = QPen(EYE, 5)
+    # felt fibres + fuzzy edge, drawn in screen pixels so they stay tiny at any size
+    world = p.transform()
+    dev_body = world.map(body)
+    dev_pts = [world.map(QPointF(x, y)) for x, y in pts]
+    centre = world.map(QPointF(0, 0))
+    p.save()
+    p.resetTransform()
+    felt = QBrush(_felt_tile())
+    felt.setTransform(QTransform.fromTranslate(c.x(), c.y()))  # texture travels with Chai
+    p.fillPath(dev_body, felt)
+    light_fibre, dark_fibre = QColor(CHAI[0]), QColor(CHAI[1])
+    light_fibre.setAlpha(170)
+    dark_fibre.setAlpha(150)
+    n = len(dev_pts)
+    for i, a0 in enumerate(dev_pts):
+        a1 = dev_pts[(i + 1) % n]
+        for u, jit, ln, is_light in _EDGE[i]:
+            base = a0 + (a1 - a0) * u
+            out = base - centre
+            norm = math.hypot(out.x(), out.y()) or 1
+            ang = math.atan2(out.y(), out.x()) + jit
+            start = base - out * (0.8 / norm)
+            pen = QPen(light_fibre if is_light else dark_fibre, 0.6)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             p.setPen(pen)
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            arc = QPainterPath(eye + QPointF(-10, 4))
-            arc.quadTo(eye + QPointF(0, -9), eye + QPointF(10, 4))
-            p.drawPath(arc)
-            p.setPen(Qt.PenStyle.NoPen)
-            continue
-        p.setBrush(EYE)
-        p.drawEllipse(eye, 10 * eye_scale, max(1.0, 14 * eye_scale * eye_open))
-        if eye_open > 0.5:
-            p.setBrush(QColor("white"))
-            p.drawEllipse(eye + QPointF(-3.2, -5.2), 3.3, 3.3)
-    pen = QPen(EYE, 4.2)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    p.setPen(pen)
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    smile = QPainterPath(QPointF(-10, 22))
-    smile.quadTo(QPointF(0, 31), QPointF(10, 22))
-    p.drawPath(smile)
+            p.drawLine(start, start + QPointF(math.cos(ang) * ln, math.sin(ang) * ln))
+    p.restore()
+
+    if spin > 0:  # face only when Chai faces us
+        p.setOpacity(min(1.0, spin * 4))
+        # face slides toward where Chai looks; a bit bigger than the design so it reads when small
+        p.translate(look.x() * 12, 16 + look.y() * 8)
+        p.scale(1.25, 1.25)
+        p.setPen(Qt.PenStyle.NoPen)
+        for bx in (-46, 46):
+            blush = QRadialGradient(QPointF(bx, 21), 15)
+            col = QColor(BLUSH)
+            col.setAlpha(160 if happy else 115)
+            blush.setColorAt(0, col)
+            col.setAlpha(0)
+            blush.setColorAt(1, col)
+            p.setBrush(QBrush(blush))
+            p.drawEllipse(QPointF(bx, 21), 16, 10)
+        for ex in (-32, 32):
+            eye = QPointF(ex + look.x() * 6, look.y() * 5)
+            if happy:
+                pen = QPen(EYE, 5)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                p.setPen(pen)
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                arc = QPainterPath(eye + QPointF(-10, 4))
+                arc.quadTo(eye + QPointF(0, -9), eye + QPointF(10, 4))
+                p.drawPath(arc)
+                p.setPen(Qt.PenStyle.NoPen)
+                continue
+            p.setBrush(EYE)  # black safety-button eyes, like a real plush toy
+            p.drawEllipse(eye, 10 * eye_scale, max(1.0, 14 * eye_scale * eye_open))
+            if eye_open > 0.5:
+                p.setBrush(QColor(255, 255, 255, 230))
+                p.drawEllipse(eye + QPointF(-3.2, -5.2), 3.2, 3.2)
+        pen = QPen(QColor("#3A1D10"), 4)  # stitched smile
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        smile = QPainterPath(QPointF(-10, 22))
+        smile.quadTo(QPointF(0, 31), QPointF(10, 22))
+        p.drawPath(smile)
     p.restore()
 
 
 def avatar_icon(size: int = 64) -> QIcon:
-    """Chai's face as an icon (system tray)."""
+    """Chai as an icon (system tray)."""
     pix = QPixmap(size, size)
     pix.fill(Qt.GlobalColor.transparent)
     p = QPainter(pix)
@@ -170,6 +257,55 @@ def avatar_icon(size: int = 64) -> QIcon:
     paint_chai(p, QPointF(size / 2, size / 2), size * 0.42, 0.0, steam=False)
     p.end()
     return QIcon(pix)
+
+
+# --- the overlay window ---------------------------------------------------------
+CHAI_W, CHAI_H = 140, 160          # Chai's own window
+CHAI_CX, CHAI_CY = 70, 90          # where Chai's centre sits inside it
+
+
+class _ChaiWindow(QWidget):
+    """Small top-level window that draws Chai and catches drags. Everything else is in Overlay."""
+
+    def __init__(self, ov: "Overlay") -> None:
+        super().__init__(
+            None,
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+            | Qt.WindowType.WindowDoesNotAcceptFocus,
+        )
+        self.ov = ov
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.resize(CHAI_W, CHAI_H)
+
+    def offset(self) -> QPointF:
+        """This window's top-left in overlay coordinates."""
+        g = self.ov.geometry()
+        return QPointF(self.x() - g.x(), self.y() - g.y())
+
+    def paintEvent(self, event) -> None:
+        if self.ov._invisible:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.translate(-self.offset())
+        self.ov._paint_avatar(p)
+
+    def _local(self, e) -> QPointF:
+        g = self.ov.geometry()
+        return e.globalPosition() - QPointF(g.x(), g.y())
+
+    def mousePressEvent(self, e) -> None:
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.ov._drag_start(self._local(e))
+
+    def mouseMoveEvent(self, e) -> None:
+        self.ov._drag_move(self._local(e))
+
+    def mouseReleaseEvent(self, e) -> None:
+        self.ov._drag_end()
 
 
 class Overlay(QWidget):
@@ -209,6 +345,15 @@ class Overlay(QWidget):
         self._t = 0.0
         self._look = QPointF(0, 0)
         self._blink_at, self._double, self._next_blink = -9.0, False, 2.0
+        self._cursor = QPointF(-999, -999)
+        self._pet = 0.0          # 0..1, rises while the mouse strokes Chai
+        self._twirl_at = -9.0
+        self._hover = False
+        self._hwnd = 0
+        self._drag: QPointF | None = None   # offset from cursor to avatar while dragging
+        self._press = QPointF()
+        self._moved = False
+        self._chai = _ChaiWindow(self)
 
         self._fly = QVariantAnimation(self)
         self._fly.setDuration(550)
@@ -217,7 +362,7 @@ class Overlay(QWidget):
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(40)
+        self._timer.start(33)
 
         self.show_text.connect(self._on_text)
         self.point_at.connect(self._on_point)
@@ -233,25 +378,40 @@ class Overlay(QWidget):
     # --- window setup ---------------------------------------------------
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        self._sync_chai()
+        self._chai.show()
         if sys.platform == "win32":
-            hwnd = int(self.winId())
+            self._hwnd = int(self.winId())
             user32 = ctypes.windll.user32
-            ex = user32.GetWindowLongW(hwnd, -20)  # GWL_EXSTYLE
+            ex = user32.GetWindowLongW(self._hwnd, -20)  # GWL_EXSTYLE
             # WS_EX_TRANSPARENT | WS_EX_NOACTIVATE: clicks pass through, never steals focus
-            user32.SetWindowLongW(hwnd, -20, ex | 0x20 | 0x08000000)
-            self._hwnd = hwnd
+            user32.SetWindowLongW(self._hwnd, -20, ex | 0x20 | 0x08000000)
             self._raise_timer = QTimer(self)
             self._raise_timer.timeout.connect(self._stay_on_top)
             self._raise_timer.start(1000)
 
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self._chai.hide()
+
     def _stay_on_top(self) -> None:
-        """Other always-on-top windows can cover us; push back to the top without taking focus."""
+        """Other always-on-top windows can cover us; push back to the top without taking focus.
+        Chai goes last so it stays above the overlay."""
         # HWND_TOPMOST, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW
-        ctypes.windll.user32.SetWindowPos(self._hwnd, -1, 0, 0, 0, 0, 0x0002 | 0x0001 | 0x0010 | 0x0040)
+        flags = 0x0002 | 0x0001 | 0x0010 | 0x0040
+        ctypes.windll.user32.SetWindowPos(self._hwnd, -1, 0, 0, 0, 0, flags)
+        ctypes.windll.user32.SetWindowPos(int(self._chai.winId()), -1, 0, 0, 0, 0, flags)
+
+    def _sync_chai(self) -> None:
+        """Keep Chai's little window centred on the avatar position."""
+        g = self.geometry()
+        self._chai.move(round(g.x() + self._avatar.x() - CHAI_CX), round(g.y() + self._avatar.y() - CHAI_CY))
+        self._chai.update()
 
     def _set_invisible(self, on: bool) -> None:
         self._invisible = on
         self.repaint()
+        self._chai.repaint()
 
     def hide_for_capture(self) -> None:
         """Call from a worker thread right before a model screenshot. Blocks until hidden."""
@@ -266,6 +426,44 @@ class Overlay(QWidget):
         g = self.geometry()
         return QPointF(x / self._dpr - g.x(), y / self._dpr - g.y())
 
+    def _on_chai(self, pt: QPointF) -> bool:
+        d = pt - self._avatar
+        return math.hypot(d.x(), d.y()) < R + 8
+
+    def is_on_avatar(self, x: int, y: int) -> bool:
+        """True if real screen px (x, y) is on Chai (safe to call from any thread)."""
+        return not self._invisible and self._on_chai(self.local(x, y))
+
+    # --- dragging Chai (events come from _ChaiWindow, in overlay coordinates) ----
+    def _drag_start(self, pos: QPointF) -> None:
+        if self._on_chai(pos):
+            self._fly.stop()
+            self._drag, self._press, self._moved = self._avatar - pos, QPointF(pos), False
+            self._chai.setCursor(Qt.CursorShape.ClosedHandCursor)
+
+    def _drag_move(self, pos: QPointF) -> None:
+        if self._drag is None:
+            return
+        d = pos - self._press
+        if math.hypot(d.x(), d.y()) > 4:
+            self._moved = True
+        if self._moved:
+            self._set_avatar(self._clamp(pos + self._drag))
+
+    def _drag_end(self) -> None:
+        if self._drag is None:
+            return
+        self._drag = None
+        self._chai.setCursor(Qt.CursorShape.OpenHandCursor)
+        if self._moved:
+            self._home = QPointF(self._avatar)  # Chai lives where the user put it
+        else:
+            self._twirl_at = self._t  # a simple click = happy twirl
+
+    def _clamp(self, pt: QPointF) -> QPointF:
+        return QPointF(min(max(pt.x(), R + 8), self.width() - R - 8),
+                       min(max(pt.y(), R + 40), self.height() - R - 12))
+
     # --- slots ----------------------------------------------------------
     def _on_text(self, text: str, mood: str) -> None:
         self._text, self._mood = text, mood
@@ -275,14 +473,16 @@ class Overlay(QWidget):
 
     def _on_point(self, x: int, y: int) -> None:
         self._target = self.local(x, y)
-        self._fly_to(self._perch(self._target))
+        if self._drag is None:
+            self._fly_to(self._perch(self._target))
 
     def _on_tap(self, x: int, y: int) -> None:
         self._taps.append((self.local(x, y), self._t))
 
     def _on_home(self) -> None:
         self._target = None
-        self._fly_to(self._home)
+        if self._drag is None:
+            self._fly_to(self._home)
 
     def _on_listening(self, on: bool) -> None:
         self._listening = on
@@ -298,6 +498,7 @@ class Overlay(QWidget):
 
     def _set_avatar(self, p) -> None:
         self._avatar = QPointF(p)
+        self._sync_chai()
         self.update()
 
     def _fly_to(self, p: QPointF) -> None:
@@ -310,14 +511,24 @@ class Overlay(QWidget):
         """Where the avatar sits next to a target: up-left of it, or flipped near edges."""
         dx = -62 if t.x() > 120 else 62
         dy = -62 if t.y() > 120 else 62
-        x = min(max(t.x() + dx, R + 8), self.width() - R - 8)
-        y = min(max(t.y() + dy, R + 8), self.height() - R - 8)
-        return QPointF(x, y)
+        return self._clamp(QPointF(t.x() + dx, t.y() + dy))
 
     def _tick(self) -> None:
-        self._t += 0.04
+        self._t += 0.033
         self._taps = [(p, b) for p, b in self._taps if self._t - b < 0.7]
+        # follow the mouse; catch clicks only while it is over Chai
+        cur = QPointF(self.mapFromGlobal(QCursor.pos()))
+        d = cur - self._cursor
+        speed = math.hypot(d.x(), d.y()) / 0.033
+        self._cursor = cur
+        hover = self._on_chai(cur) and not self._invisible
+        if self._drag is None and hover != self._hover:
+            self._chai.setCursor(Qt.CursorShape.OpenHandCursor if hover else Qt.CursorShape.ArrowCursor)
+        self._hover = hover
+        stroking = hover and speed > 40 and self._drag is None
+        self._pet += ((1.0 if stroking else 0.0) - self._pet) * (0.18 if stroking else 0.06)
         self.update()
+        self._chai.update()
 
     # --- painting -------------------------------------------------------
     def paintEvent(self, event) -> None:
@@ -331,23 +542,22 @@ class Overlay(QWidget):
             age = (self._t - born) / 0.7
             c = QColor(TARGET)
             c.setAlphaF(max(0.0, 1 - age))
-            p.setPen(QPen(c, 4))
+            p.setPen(QPen(c, 3))
             p.setBrush(Qt.BrushStyle.NoBrush)
-            r = 8 + 40 * age
+            r = 6 + 32 * age
             p.drawEllipse(pos, r, r)
-        self._paint_avatar(p)
-        if self._text:
+        if self._text:  # Chai itself is painted by its own window (_ChaiWindow)
             self._paint_bubble(p)
 
     def _paint_target(self, p: QPainter) -> None:
         t = self._target
-        pulse = 18 + 5 * math.sin(self._t * 5)
+        pulse = 15 + 3 * math.sin(self._t * 5)
         glow = QColor(TARGET)
-        glow.setAlpha(50)
+        glow.setAlpha(40)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(glow)
-        p.drawEllipse(t, pulse + 6, pulse + 6)
-        p.setPen(QPen(TARGET, 3))
+        p.drawEllipse(t, pulse + 5, pulse + 5)
+        p.setPen(QPen(TARGET, 2.5))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawEllipse(t, pulse, pulse)
         # dashed curve from the avatar to the target
@@ -360,37 +570,53 @@ class Overlay(QWidget):
             mid = (start + end) / 2 + QPointF(-d.y(), d.x()) * 0.15
             path = QPainterPath(start)
             path.quadTo(mid, end)
-            pen = QPen(TARGET, 2.5, Qt.PenStyle.DashLine)
+            pen = QPen(TARGET, 2, Qt.PenStyle.DashLine)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             p.setPen(pen)
             p.drawPath(path)
 
     def _paint_avatar(self, p: QPainter) -> None:
         a = self._avatar
-        c = QPointF(a.x(), a.y() + math.sin(self._t * 2.2) * 1.5)
+        lift = 0.0
+        tw = (self._t - self._twirl_at) / 0.9
+        spin = 1.0
+        if 0 <= tw < 1:  # twirl: spin once with a little hop
+            e = 2 * tw * tw if tw < 0.5 else 1 - (-2 * tw + 2) ** 2 / 2
+            spin = math.cos(math.tau * e)
+            lift = math.sin(math.pi * tw) * 14
+        if self._drag is not None and self._moved:
+            lift = 6  # held up in the air while dragging
+        c = QPointF(a.x(), a.y() + math.sin(self._t * 2.2) * 1.5 - lift)
+
         mood = MOODS["listen"] if self._listening else ACCENT
         if self._listening:
             for k in range(2):
                 phase = (self._t * 1.2 + k * 0.5) % 1.0
                 ring = QColor(mood)
-                ring.setAlphaF(0.5 * (1 - phase))
-                p.setPen(QPen(ring, 3))
+                ring.setAlphaF(0.45 * (1 - phase))
+                p.setPen(QPen(ring, 2))
                 p.setBrush(Qt.BrushStyle.NoBrush)
-                p.drawEllipse(c, R + 8 + 22 * phase, R + 8 + 22 * phase)
-        # soft shadow
+                p.drawEllipse(c, R + 8 + 20 * phase, R + 8 + 20 * phase)
+        # soft ground shadow, smaller while Chai is up in the air
+        shadow = QRadialGradient(QPointF(a.x(), a.y() + R + 6), R * 0.85)
+        shadow.setColorAt(0, QColor(0, 0, 0, max(15, 60 - int(lift * 3))))
+        shadow.setColorAt(1, QColor(0, 0, 0, 0))
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(0, 0, 0, 45))
-        p.drawEllipse(QPointF(a.x(), a.y() + R + 6), R * 0.8, 5)
+        p.setBrush(QBrush(shadow))
+        p.drawEllipse(QPointF(a.x(), a.y() + R + 6), R * 0.85 * (1 - lift / 40), 6)
 
-        # where Chai looks: up-right while thinking, else toward the target
-        look = QPointF(0, 0)
-        if self._thinking:
-            look = QPointF(0.75, -0.85)
-        elif self._target is not None:
+        # where Chai looks: the target, up-right while thinking, else the mouse
+        if self._target is not None:
             d = self._target - a
             n = math.hypot(d.x(), d.y()) or 1
-            look = QPointF(d.x() / n * 0.8, d.y() / n * 0.8)
-        self._look += (look - self._look) * 0.25
+            look = QPointF(d.x() / n * 0.85, d.y() / n * 0.85)
+        elif self._thinking:
+            look = QPointF(0.75, -0.85)
+        else:
+            d = self._cursor - a
+            n = math.hypot(d.x(), d.y())
+            look = QPointF(d.x() / (n + 60), d.y() / (n + 60))
+        self._look += (look - self._look) * 0.22
 
         if self._t > self._next_blink:  # random blinks, sometimes a double blink
             self._blink_at = self._t
@@ -401,43 +627,74 @@ class Overlay(QWidget):
         if self._double and 0.26 < d0 < 0.42:
             closed = math.sin(math.pi * (d0 - 0.26) / 0.16)
 
-        paint_chai(p, c, R, self._t, self._look, listening=self._listening,
-                   happy=self._mood == "done" and bool(self._text),
-                   eye_open=1 - closed, steam=not self._thinking)
+        rot = self._look.x() * 5 + math.sin(self._t * 14) * 4 * self._pet  # lean toward the look + petting wiggle
+        happy = (self._mood == "done" and bool(self._text)) or self._pet > 0.45 or spin < 0.95
+        paint_chai(p, c, R, self._t, self._look, listening=self._listening, happy=happy,
+                   eye_open=1 - closed, steam=not self._thinking, rot=rot, spin=spin)
         if self._thinking:  # three bouncing dots above the head
             for k in range(3):
-                dy = -abs(math.sin(self._t * 6 + k * 0.7)) * 6
+                dy = -abs(math.sin(self._t * 6 + k * 0.7)) * 5
+                pos = c + QPointF(-10 + k * 10, -R - 12 + dy)
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(QColor(255, 255, 255, 235))
-                p.drawEllipse(c + QPointF(-12 + k * 12, -R - 14 + dy), 5, 5)
+                p.drawEllipse(pos, 4.5, 4.5)
                 p.setBrush(mood)
-                p.drawEllipse(c + QPointF(-12 + k * 12, -R - 14 + dy), 3, 3)
+                p.drawEllipse(pos, 2.6, 2.6)
 
     def _paint_bubble(self, p: QPainter) -> None:
+        pad = 14
         doc = QTextDocument()
-        doc.setDefaultFont(QFont(FONT, 14))
+        doc.setDefaultFont(ui_font(10.5))
         doc.setDocumentMargin(0)
-        doc.setHtml(f"<div style='color:#111827'>{to_html(self._text)}</div>")
-        doc.setTextWidth(BUBBLE_W - 32)
-        w = max(200, min(BUBBLE_W, doc.idealWidth() + 32))  # wide enough for the header
-        doc.setTextWidth(w - 32)
-        h = doc.size().height() + 52  # text + header + padding
+        doc.setHtml(f"<div style='color:#0F172A; line-height:125%'>{to_html(self._text)}</div>")
+        doc.setTextWidth(BUBBLE_W - 2 * pad)
+        w = max(160, min(BUBBLE_W, doc.idealWidth() + 2 * pad))
+        doc.setTextWidth(w - 2 * pad)
+        h = doc.size().height() + 44  # text + header + padding
         rect = self._bubble_rect(w, h)
-
+        radius = 16
         mood = MOODS.get(self._mood, ACCENT)
+
+        # soft layered shadow
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(0, 0, 0, 40))
-        p.drawRoundedRect(rect.translated(0, 3), 14, 14)
-        p.setBrush(QColor(255, 255, 255, 250))
-        p.setPen(QPen(mood, 2))
-        p.drawRoundedRect(rect, 14, 14)
-        # header chip: "ZAVERO · GUIDE"
-        p.setPen(mood)
-        p.setFont(QFont(FONT, 9, QFont.Weight.Bold))
-        p.drawText(QRectF(rect.x() + 16, rect.y() + 8, w - 32, 18), Qt.AlignmentFlag.AlignLeft,
-                   f"ZAVERO · {self._mode.upper()}")
+        for grow, alpha in ((10, 10), (6, 14), (3, 18)):
+            p.setBrush(QColor(15, 23, 42, alpha))
+            p.drawRoundedRect(rect.adjusted(-grow / 2, grow / 3, grow / 2, grow), radius + grow / 2, radius + grow / 2)
+        # frosted glass: see-through white with a faint tint of the mood colour
+        glass = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        glass.setColorAt(0, QColor(255, 255, 255, 212))
+        glass.setColorAt(1, QColor(250, 248, 253, 178))
+        p.setBrush(QBrush(glass))
+        p.drawRoundedRect(rect, radius, radius)
+        tint = QColor(mood)
+        tint.setAlpha(14)
+        p.setBrush(tint)
+        p.drawRoundedRect(rect, radius, radius)
+        # top sheen
+        sheen = QLinearGradient(rect.topLeft(), QPointF(rect.left(), rect.top() + h * 0.55))
+        sheen.setColorAt(0, QColor(255, 255, 255, 110))
+        sheen.setColorAt(1, QColor(255, 255, 255, 0))
+        p.setBrush(QBrush(sheen))
+        p.drawRoundedRect(rect.adjusted(1, 1, -1, -1), radius - 1, radius - 1)
+        # hairline edges: bright inner, faint dark outer
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(QColor(15, 23, 42, 38), 1))
+        p.drawRoundedRect(rect.adjusted(-0.5, -0.5, 0.5, 0.5), radius + 0.5, radius + 0.5)
+        p.setPen(QPen(QColor(255, 255, 255, 210), 1))
+        p.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius - 0.5, radius - 0.5)
+
+        # header: mood dot + "ZAVERO · GUIDE"
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(mood)
+        p.drawEllipse(QPointF(rect.x() + pad + 3.5, rect.y() + 15.5), 3.5, 3.5)
+        head = ui_font(7.5, bold=True)
+        head.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.8)
+        p.setFont(head)
+        p.setPen(QColor(71, 85, 105))
+        p.drawText(QRectF(rect.x() + pad + 12, rect.y() + 8, w - 2 * pad - 12, 16),
+                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, f"ZAVERO · {self._mode.upper()}")
         p.save()
-        p.translate(rect.x() + 16, rect.y() + 34)
+        p.translate(rect.x() + pad, rect.y() + 28)
         doc.drawContents(p)
         p.restore()
 

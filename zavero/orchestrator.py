@@ -114,7 +114,7 @@ class Orchestrator:
         self.start(text, "do" if intent == "do" else "guide")
 
     def _on_click(self, x, y, button, pressed) -> None:
-        if pressed and self._waiting:
+        if pressed and self._waiting and not self.ui.is_on_avatar(x, y):  # dragging Chai is not a step
             t = self._guide_target
             self._off_target = bool(t) and (x - t[0]) ** 2 + (y - t[1]) ** 2 > config.CLICK_RADIUS ** 2
             self._acted.set()
