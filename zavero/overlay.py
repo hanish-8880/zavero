@@ -1,4 +1,4 @@
-"""Transparent, click-through, always-on-top overlay: Zavero's avatar, speech bubble and target ring.
+"""Transparent, click-through, always-on-top overlay: Zavero's avatar (Chai), speech bubble and target ring.
 
 Other threads drive it only through the signals (thread-safe). Coordinates passed in are
 real screen pixels (what driver.to_screen returns); the overlay converts them to Qt pixels.
@@ -11,6 +11,7 @@ Preview without the rest of the app:
 import ctypes
 import html
 import math
+import random
 import re
 import sys
 import time
@@ -21,13 +22,16 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import QApplication, QWidget
 
-R = 26  # avatar radius
+R = 32  # avatar radius
 BUBBLE_W = 380
 FONT = "Nirmala UI"  # ships with Windows; covers Telugu, Devanagari and Latin
 
-ACCENT = QColor("#6D4AFF")
+CHAI = (QColor("#FBE0C0"), QColor("#DCA066"), QColor("#A4612C"))  # light, mid, dark caramel
+EYE = QColor("#120B1A")
+BLUSH = QColor("#F2788C")
+ACCENT = QColor("#B8733A")
 MOODS = {
-    "info": QColor("#6D4AFF"),
+    "info": QColor("#B8733A"),
     "listen": QColor("#00A3FF"),
     "warn": QColor("#F59E0B"),
     "done": QColor("#16A34A"),
@@ -43,26 +47,127 @@ def to_html(text: str) -> str:
     return t.replace("\n", "<br>")
 
 
+def _chai_point(a: float) -> tuple[float, float]:
+    """Chai's cloud outline in design units (about 208 wide), same shape as design/zavero-buddies.html."""
+    k = 1 - 0.85 * max(0.0, math.sin(a))  # bumps fade out towards the flat bottom
+    r = 104 * (1 + 0.075 * math.cos(7 * a + math.pi / 2) * k)
+    return r * math.cos(a), r * math.sin(a) * 0.86 + 8
+
+
+_CHAI_PTS = [(a, *_chai_point(a)) for a in (i / 64 * math.tau for i in range(64))]
+_BOTTOM = 96  # lowest point of the cloud, used as the squash anchor
+
+
+def _smooth(pts: list[tuple[float, float]]) -> QPainterPath:
+    """Closed Catmull-Rom curve through the points."""
+    n = len(pts)
+    path = QPainterPath(QPointF(*pts[0]))
+    for i in range(n):
+        p0, p1, p2, p3 = pts[i - 1], pts[i], pts[(i + 1) % n], pts[(i + 2) % n]
+        path.cubicTo(
+            QPointF(p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6),
+            QPointF(p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6),
+            QPointF(*p2),
+        )
+    return path
+
+
+def paint_chai(p: QPainter, c: QPointF, size: float, t: float, look: QPointF = QPointF(),
+               listening: bool = False, happy: bool = False, eye_open: float = 1.0,
+               steam: bool = True) -> None:
+    """Draw Chai, the caramel cloud buddy, centred at c. size ~ body radius in px; look in [-1, 1]."""
+    s = size / 104
+    breathe = math.sin(t * 1.3)
+    sx, sy, wob, eye_scale = 1 + 0.035 * breathe, 1 + 0.045 * breathe, 0.028, 1.0
+    if listening:  # leans in, wobbles faster, eyes bigger
+        sx, sy, wob, eye_scale = sx * 1.05, sy * 1.05, 0.05, 1.15
+    p.save()
+    p.translate(c.x(), c.y() + _BOTTOM * s)
+    p.scale(s * sx, s * sy)
+    p.translate(0, -_BOTTOM)
+
+    if steam:  # three wisps rising from the cup-warm head
+        for i, x in enumerate((-26, 0, 26)):
+            ph = (t * 0.35 + i / 3) % 1
+            col = QColor(CHAI[2])
+            col.setAlphaF(math.sin(math.pi * ph) * 0.55)
+            pen = QPen(col, 7)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            y0 = -96 - ph * 30
+            wisp = QPainterPath(QPointF(x, y0))
+            wisp.cubicTo(QPointF(x + 8, y0 - 10), QPointF(x - 8, y0 - 20), QPointF(x, y0 - 30))
+            wisp.cubicTo(QPointF(x + 8, y0 - 40), QPointF(x - 8, y0 - 50), QPointF(x, y0 - 60))
+            p.drawPath(wisp)
+
+    # body: living outline + caramel gradient + soft plush shading
+    speed = 1.6 if listening else 1.0
+    pts = []
+    for a, x, y in _CHAI_PTS:
+        k = 1 + wob * (math.sin(3 * a + t * 1.7 * speed + 5.2) + 0.6 * math.sin(5 * a - t * 2.3 * speed + 10.4)) / 1.6
+        pts.append((x * k, y * k))
+    body = _smooth(pts)
+    g = QRadialGradient(QPointF(-27, -27), 165)
+    for stop, col in zip((0, 0.45, 1), CHAI):
+        g.setColorAt(stop, col)
+    p.setBrush(QBrush(g))
+    p.setPen(QPen(QColor(255, 255, 255, 210), 6))  # sticker edge so Chai shows on dark screens too
+    p.drawPath(body)
+    p.setPen(Qt.PenStyle.NoPen)
+    shade = QRadialGradient(QPointF(-22, -30), 150)
+    shade.setColorAt(0.6, QColor(0, 0, 0, 0))
+    shade.setColorAt(1, QColor(60, 25, 10, 90))
+    p.setBrush(QBrush(shade))
+    p.drawPath(body)
+    hl = QRadialGradient(QPointF(-36, -40), 50)
+    hl.setColorAt(0, QColor(255, 255, 255, 95))
+    hl.setColorAt(1, QColor(255, 255, 255, 0))
+    p.setBrush(QBrush(hl))
+    p.drawEllipse(QPointF(-36, -40), 50, 34)
+
+    # face slides toward where Chai is looking; a bit bigger than the design so it reads when small
+    p.translate(look.x() * 12, 16 + look.y() * 8)
+    p.scale(1.25, 1.25)
+    blush = QColor(BLUSH)
+    blush.setAlpha(150 if happy else 110)
+    p.setBrush(blush)
+    for bx in (-46, 46):
+        p.drawEllipse(QPointF(bx, 21), 14, 8)
+    for ex in (-32, 32):
+        eye = QPointF(ex + look.x() * 6, look.y() * 5)
+        if happy:
+            pen = QPen(EYE, 5)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            arc = QPainterPath(eye + QPointF(-10, 4))
+            arc.quadTo(eye + QPointF(0, -9), eye + QPointF(10, 4))
+            p.drawPath(arc)
+            p.setPen(Qt.PenStyle.NoPen)
+            continue
+        p.setBrush(EYE)
+        p.drawEllipse(eye, 10 * eye_scale, max(1.0, 14 * eye_scale * eye_open))
+        if eye_open > 0.5:
+            p.setBrush(QColor("white"))
+            p.drawEllipse(eye + QPointF(-3.2, -5.2), 3.3, 3.3)
+    pen = QPen(EYE, 4.2)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    smile = QPainterPath(QPointF(-10, 22))
+    smile.quadTo(QPointF(0, 31), QPointF(10, 22))
+    p.drawPath(smile)
+    p.restore()
+
+
 def avatar_icon(size: int = 64) -> QIcon:
-    """Zavero's face as an icon (system tray)."""
+    """Chai's face as an icon (system tray)."""
     pix = QPixmap(size, size)
     pix.fill(Qt.GlobalColor.transparent)
     p = QPainter(pix)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    c, r = QPointF(size / 2, size / 2), size / 2 - 2
-    g = QRadialGradient(c + QPointF(-r * 0.35, -r * 0.45), r * 1.6)
-    g.setColorAt(0, ACCENT.lighter(160))
-    g.setColorAt(0.55, ACCENT)
-    g.setColorAt(1, ACCENT.darker(160))
-    p.setBrush(QBrush(g))
-    p.setPen(Qt.PenStyle.NoPen)
-    p.drawEllipse(c, r, r)
-    for ex in (-0.33, 0.33):
-        eye = c + QPointF(ex * r, -0.15 * r)
-        p.setBrush(QColor("white"))
-        p.drawEllipse(eye, r * 0.22, r * 0.26)
-        p.setBrush(QColor("#1E1B4B"))
-        p.drawEllipse(eye, r * 0.11, r * 0.13)
+    paint_chai(p, QPointF(size / 2, size / 2), size * 0.42, 0.0, steam=False)
     p.end()
     return QIcon(pix)
 
@@ -102,6 +207,8 @@ class Overlay(QWidget):
         self._listening = False
         self._taps: list[tuple[QPointF, float]] = []
         self._t = 0.0
+        self._look = QPointF(0, 0)
+        self._blink_at, self._double, self._next_blink = -9.0, False, 2.0
 
         self._fly = QVariantAnimation(self)
         self._fly.setDuration(550)
@@ -260,8 +367,7 @@ class Overlay(QWidget):
 
     def _paint_avatar(self, p: QPainter) -> None:
         a = self._avatar
-        bob = math.sin(self._t * 2.2) * 2.5
-        c = QPointF(a.x(), a.y() + bob)
+        c = QPointF(a.x(), a.y() + math.sin(self._t * 2.2) * 1.5)
         mood = MOODS["listen"] if self._listening else ACCENT
         if self._listening:
             for k in range(2):
@@ -270,36 +376,34 @@ class Overlay(QWidget):
                 ring.setAlphaF(0.5 * (1 - phase))
                 p.setPen(QPen(ring, 3))
                 p.setBrush(Qt.BrushStyle.NoBrush)
-                p.drawEllipse(c, R + 4 + 22 * phase, R + 4 + 22 * phase)
+                p.drawEllipse(c, R + 8 + 22 * phase, R + 8 + 22 * phase)
         # soft shadow
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(0, 0, 0, 45))
-        p.drawEllipse(QPointF(a.x(), a.y() + R + 8), R * 0.75, 5)
-        # body
-        g = QRadialGradient(c + QPointF(-R * 0.35, -R * 0.45), R * 1.6)
-        g.setColorAt(0, mood.lighter(160))
-        g.setColorAt(0.55, mood)
-        g.setColorAt(1, mood.darker(160))
-        p.setBrush(QBrush(g))
-        p.setPen(QPen(QColor(255, 255, 255, 220), 2))
-        p.drawEllipse(c, R, R)
-        # eyes look toward the target
+        p.drawEllipse(QPointF(a.x(), a.y() + R + 6), R * 0.8, 5)
+
+        # where Chai looks: up-right while thinking, else toward the target
         look = QPointF(0, 0)
-        if self._target is not None:
+        if self._thinking:
+            look = QPointF(0.75, -0.85)
+        elif self._target is not None:
             d = self._target - a
             n = math.hypot(d.x(), d.y()) or 1
-            look = QPointF(d.x() / n * 3, d.y() / n * 3)
-        blink = (self._t % 4.0) < 0.12
-        for ex in (-9, 9):
-            eye = c + QPointF(ex, -4)
-            p.setBrush(QColor("white"))
-            p.setPen(Qt.PenStyle.NoPen)
-            if blink:
-                p.drawRoundedRect(QRectF(eye.x() - 6, eye.y() - 1.2, 12, 2.4), 1.2, 1.2)
-            else:
-                p.drawEllipse(eye, 6, 7)
-                p.setBrush(QColor("#1E1B4B"))
-                p.drawEllipse(eye + look, 3, 3.5)
+            look = QPointF(d.x() / n * 0.8, d.y() / n * 0.8)
+        self._look += (look - self._look) * 0.25
+
+        if self._t > self._next_blink:  # random blinks, sometimes a double blink
+            self._blink_at = self._t
+            self._double = random.random() < 0.25
+            self._next_blink = self._t + 2 + random.random() * 3.5
+        d0 = self._t - self._blink_at
+        closed = math.sin(math.pi * d0 / 0.16) if d0 < 0.16 else 0.0
+        if self._double and 0.26 < d0 < 0.42:
+            closed = math.sin(math.pi * (d0 - 0.26) / 0.16)
+
+        paint_chai(p, c, R, self._t, self._look, listening=self._listening,
+                   happy=self._mood == "done" and bool(self._text),
+                   eye_open=1 - closed, steam=not self._thinking)
         if self._thinking:  # three bouncing dots above the head
             for k in range(3):
                 dy = -abs(math.sin(self._t * 6 + k * 0.7)) * 6
@@ -308,12 +412,6 @@ class Overlay(QWidget):
                 p.drawEllipse(c + QPointF(-12 + k * 12, -R - 14 + dy), 5, 5)
                 p.setBrush(mood)
                 p.drawEllipse(c + QPointF(-12 + k * 12, -R - 14 + dy), 3, 3)
-        # smile
-        smile = QPen(QColor("white"), 2.2)
-        smile.setCapStyle(Qt.PenCapStyle.RoundCap)
-        p.setPen(smile)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawArc(QRectF(c.x() - 7, c.y() + 1, 14, 10), 200 * 16, 140 * 16)
 
     def _paint_bubble(self, p: QPainter) -> None:
         doc = QTextDocument()
