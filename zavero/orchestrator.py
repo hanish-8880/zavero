@@ -6,7 +6,7 @@ import time
 
 from pynput import keyboard, mouse
 
-from zavero import actionlog, briefing, config, driver, narrator, reminders, safety
+from zavero import actionlog, briefing, config, driver, narrator, reminders, safety, talk
 from zavero.phrases import lang, phrase
 from zavero.brain import Brain, Step
 
@@ -108,6 +108,9 @@ class Orchestrator:
         if briefing.is_briefing(text) and not self.busy:
             threading.Thread(target=self.brief, daemon=True).start()
             return
+        if talk.is_question(text):  # "what is this?" -> quick answer; a running guide keeps going
+            threading.Thread(target=self._talk, args=(text,), daemon=True).start()
+            return
         if self.busy:
             if intent == "do":  # "do it" / "you do for me ..." mid-task: same task, Zavero takes over
                 self._remember("user", text)
@@ -185,6 +188,25 @@ class Orchestrator:
         lines = [f"{'User' if who == 'user' else 'You (Zavero)'}: {t}" for _, who, t in recent]
         return ("Earlier in this conversation (oldest first):\n" + "\n".join(lines)
                 + f"\n\nThe user now says: {text}")
+
+    # --- "what is this?" ---------------------------------------------------
+    def _talk(self, text: str) -> None:
+        """Quick answer about the screen, pointing at the thing it explains."""
+        self.ui.set_mode.emit("Explain")
+        mouse_at = tuple(int(v) for v in mouse.Controller().position)
+        try:
+            shot = self._screenshot()
+            res = self._think(lambda: talk.answer(self._with_context(text), shot, mouse_at, lang(text)))
+        except Exception as e:  # noqa: BLE001
+            actionlog.log("talk_error", text=text, error=str(e))
+            self._say(f"Sorry, I couldn't look at your screen:\n{e}", "error")
+            return
+        if res["point"]:
+            self.ui.point_at.emit(*driver.to_screen(res["point"]["x"], res["point"]["y"], shot))
+        self._remember("user", text)
+        self._remember("zavero", res["answer"])
+        actionlog.log("talk", question=text, answer=res["answer"], point=res["point"])
+        self._say(res["answer"], "info")
 
     # --- "what matters today?" -------------------------------------------
     def brief(self) -> None:
