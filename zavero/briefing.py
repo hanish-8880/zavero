@@ -22,8 +22,10 @@ SYSTEM = (
     "chat bubble. Pick only what really matters (at most 3 points): things due today, people waiting for an "
     "answer, deadlines, bills. Skip ads, newsletters and anything that can wait; if you skipped some, say "
     "in a few words that the rest can wait. If nothing matters, say so happily.\n"
-    "Format: one short greeting line, then up to 3 lines starting with '• ', then one short line: "
-    "hold **Right Ctrl** if they need help with any of these. Do not offer anything else. "
+    "Speak to the user directly ('you'). Greet for the actual time of day.\n"
+    "Format: one short greeting line, then up to 3 lines starting with '• ', then one short line telling "
+    "them to hold **Right Ctrl** if they want help with these. If nothing matters, write only one or two "
+    "cheerful lines (no bullets, no help line). Do not offer anything else. "
     "Put names, times and amounts in **bold**. Very simple words.\n"
     "Language: {lang}."
 )

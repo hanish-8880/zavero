@@ -145,6 +145,10 @@ class Orchestrator:
             self._cancel.set()
             self._acted.set()
             self._answered.set()
+            # React right away; the worker may still be waiting for the model for a few seconds.
+            self.ui.go_home.emit()
+            self.ui.set_thinking.emit(False)
+            self._say(phrase("stopped", self.user_text), "done")
 
     def start(self, text: str, mode: str) -> None:
         self.user_text = text
@@ -279,10 +283,12 @@ class Orchestrator:
             for a in step.actions:
                 driver.execute(a, shot)
             return []
+        self._check()  # "stop" may have come while the model was thinking
         target = self._target(step, shot)
         if target:
             self.ui.point_at.emit(*target)
         text = self._think(lambda: narrator.narrate("guide", self.user_text, step.text, step.actions))
+        self._check()
         self._say(text, "info")
         actionlog.log("guide", note=step.text, bubble=text, target=target)
         self._guide_target = target
