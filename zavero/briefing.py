@@ -78,7 +78,7 @@ def gather(store: reminders.Reminders, gmail=None, now: datetime | None = None) 
 def write(facts: str, user_lang: str = "en") -> str:
     """Muse Spark turns the facts into the bubble text."""
     resp = config.client().responses.create(
-        model=config.MODEL_SPARK,
+        model=config.MODEL_SPARK, reasoning=config.REASONING,
         instructions=SYSTEM.replace("{lang}", LANG_NAME.get(user_lang, LANG_NAME["en"])),
         input=facts,
     )

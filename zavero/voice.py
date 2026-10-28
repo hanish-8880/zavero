@@ -140,6 +140,7 @@ class PushToTalk:
                 "partialMode": "CUMULATIVE",
                 "emitAudioProgress": False,
                 "languageBias": config.LANGUAGE_BIAS,
+                "keywords": config.ASR_KEYWORDS,
             }))
             ack = json.loads(await asyncio.wait_for(ws.recv(), 10))
             if ack.get("type") == "error":

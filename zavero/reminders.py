@@ -62,7 +62,8 @@ def parse(text: str, now: datetime | None = None) -> dict:
     """Ask Muse Spark what the user wants. Returns the JSON dict described in SYSTEM."""
     now = now or datetime.now()
     prompt = f"Now: {now:%A %Y-%m-%d %H:%M} (local time)\nUser said: {text}"
-    resp = config.client().responses.create(model=config.MODEL_SPARK, instructions=SYSTEM, input=prompt)
+    resp = config.client().responses.create(model=config.MODEL_SPARK, instructions=SYSTEM, input=prompt,
+                                            reasoning=config.REASONING)
     data = extract_json(resp.output_text)
     if data.get("action") == "add":
         datetime.strptime(data["when"], TIME_FMT)  # raises if the model got the format wrong

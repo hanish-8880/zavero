@@ -55,7 +55,7 @@ def narrate(kind: str, user_text: str, model_text: str, actions=(), reason: str 
     )
     try:
         resp = config.client().responses.create(
-            model=config.MODEL_SPARK, instructions=SYSTEM, input=prompt,
+            model=config.MODEL_SPARK, instructions=SYSTEM, input=prompt, reasoning=config.REASONING,
         )
         text = (resp.output_text or "").strip()
         return text or model_text

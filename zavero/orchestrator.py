@@ -128,7 +128,12 @@ class Orchestrator:
                 return
             self.start(self.user_text, "do")  # "do it" after a guided task -> redo it for them
             return
-        self.start(text, "do" if intent == "do" else "guide")
+        self.start(text, "do" if intent == "do" or self._answers_do_question() else "guide")
+
+    def _answers_do_question(self) -> bool:
+        """True if Zavero just finished a do-mode task by asking something: the reply keeps do mode."""
+        return (self.mode == "do" and getattr(self, "_asked_at", None) is not None
+                and time.monotonic() - self._asked_at < 300)
 
     def _on_click(self, x, y, button, pressed) -> None:
         if pressed and self._waiting and not self.ui.is_on_avatar(x, y):  # dragging Chai is not a step
@@ -246,6 +251,7 @@ class Orchestrator:
                 self._set_step(brain.steps)
             ui.go_home.emit()
             self._remember("zavero", result)
+            self._asked_at = time.monotonic() if "?" in result else None  # ended with a question for the user
             self._say(self._think(lambda: narrator.narrate("final", said, result)), "done")
             actionlog.log("finished", text=result)
         except Cancelled:

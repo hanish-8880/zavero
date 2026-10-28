@@ -20,6 +20,9 @@ MAX_STEPS = 25
 GUIDE_IDLE_S = 120  # guide mode gives up if the user does nothing for this long
 CLICK_RADIUS = 90  # real px: a click this close to the ring counts as following the guide
 API_TIMEOUT_S = 60
+# Muse Spark thinking depth. "low" measured Oct 28: screen steps 7.1s -> 4.4s with the same click,
+# bubble text 5.2s -> ~2.5s and still correct ("minimal" got the wording wrong).
+REASONING = {"effort": "low"}
 
 # Hold this one key to talk. Any pynput Key name: "ctrl_r", "alt_r", "f9", ...
 PTT_KEY = "ctrl_r"
@@ -28,6 +31,10 @@ MAX_TALK_S = 15  # recording stops by itself after this
 
 SAMPLE_RATE = 24_000
 LANGUAGE_BIAS = ["English", "Telugu", "Hindi"]
+# Words the speech model should expect (biases recognition; Oct 28 "APSPDCL" came out as "minus AB square").
+ASR_KEYWORDS = ["Zavero", "APSPDCL", "APEPDCL", "TGSPDCL", "current bill", "service number", "Quick Pay",
+                "Canva", "Gmail", "Chrome", "WhatsApp", "Notepad", "nuvve chey", "kar do", "do it for me",
+                "remind me", "gurthu", "yaad dilana", "ayindi", "ho gaya"]
 
 LOG_DIR = ROOT / "logs"
 

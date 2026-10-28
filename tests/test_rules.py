@@ -36,6 +36,21 @@ def test_conversation_memory():
     assert task.endswith("The user now says: APSPDCL")
 
 
+def test_answer_keeps_do_mode():
+    import time
+
+    from zavero.orchestrator import Orchestrator
+
+    o = Orchestrator.__new__(Orchestrator)
+    o.mode = "do"
+    o._asked_at = None
+    assert not o._answers_do_question()  # finished without a question
+    o._asked_at = time.monotonic()  # "Which electricity company?"
+    assert o._answers_do_question()
+    o.mode = "guide"
+    assert not o._answers_do_question()
+
+
 def test_risky():
     assert risky_reason("I'll click the Pay Now button", []) is not None
     assert risky_reason("I'll click Submit", []) is not None

@@ -70,7 +70,7 @@ class Brain:
         for _ in range(2):  # one retry on network/server trouble
             try:
                 resp = self.client.responses.create(
-                    model=self.model, instructions=SYSTEM, tools=TOOLS,
+                    model=self.model, instructions=SYSTEM, tools=TOOLS, reasoning=config.REASONING,
                     input=input_items, truncation="auto", **kwargs,
                 )
                 break

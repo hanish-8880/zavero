@@ -108,7 +108,7 @@ def analyze(msg: dict, user_lang: str = "en") -> dict:
     email = (f"From: {h.get('from', '')}\nSubject: {h.get('subject', '')}\n\n"
              f"{body_text(msg['payload']) or msg.get('snippet', '')}")
     resp = config.client().responses.create(
-        model=config.MODEL_SPARK,
+        model=config.MODEL_SPARK, reasoning=config.REASONING,
         instructions=SYSTEM.replace("{lang}", LANG_NAME.get(user_lang, LANG_NAME["en"])),
         input=email,
     )

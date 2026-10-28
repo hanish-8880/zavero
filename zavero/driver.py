@@ -56,10 +56,10 @@ def to_screen(x: float, y: float, shot: Shot) -> tuple[int, int]:
 
 
 def encode(img: Image.Image) -> str:
-    """PNG data URL."""
+    """JPEG data URL (about 3x smaller than PNG, so each step uploads faster; same click accuracy)."""
     buf = io.BytesIO()
-    img.save(buf, format="PNG", optimize=True)
-    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    img.convert("RGB").save(buf, format="JPEG", quality=80)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
 def screenshot(monitor: int = 1) -> Shot:
