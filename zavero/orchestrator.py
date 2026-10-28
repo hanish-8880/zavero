@@ -1,12 +1,13 @@
 """Ties voice -> brain -> overlay -> driver together and holds session state."""
+import datetime
 import re
 import threading
 import time
 
 from pynput import keyboard, mouse
 
-from zavero import actionlog, config, driver, narrator, reminders, safety
-from zavero.phrases import phrase
+from zavero import actionlog, briefing, config, driver, narrator, reminders, safety
+from zavero.phrases import lang, phrase
 from zavero.brain import Brain, Step
 
 # Short spoken commands. Matched as whole words/phrases after lowercasing.
@@ -72,6 +73,8 @@ class Orchestrator:
         self._off_target = False
         self._strikes = 0
         self.reminders = reminders.Reminders()
+        self.gmail = None  # Gmail API client, set by main.py when Gmail is connected
+        self.lang = briefing.load_state().get("lang", "en")  # user's language, remembered across runs
         mouse.Listener(on_click=self._on_click).start()
         keyboard.Listener(on_press=self._on_key).start()
 
@@ -84,6 +87,9 @@ class Orchestrator:
         """Called with each final transcript from voice.py."""
         intent = classify(text)
         actionlog.log("heard", text=text, intent=intent)
+        if len(_norm(text).split()) > 2 and lang(text) != self.lang:
+            self.lang = lang(text)
+            briefing.save_state(lang=self.lang)
         if self._asking:
             if intent in ("yes", "do", "no", "stop"):
                 self._answer = intent in ("yes", "do")
@@ -96,6 +102,9 @@ class Orchestrator:
             return
         if reminders.is_reminder(text):  # handled on the side; a running guide keeps going
             threading.Thread(target=self._remind, args=(text,), daemon=True).start()
+            return
+        if briefing.is_briefing(text) and not self.busy:
+            threading.Thread(target=self.brief, daemon=True).start()
             return
         if self.busy:
             if intent == "do" and len(_norm(text).split()) <= 4:
@@ -144,6 +153,22 @@ class Orchestrator:
         self._strikes = 0
         self._worker = threading.Thread(target=self._run, args=(text,), daemon=True)
         self._worker.start()
+
+    # --- "what matters today?" -------------------------------------------
+    def brief(self) -> None:
+        """Short briefing: at most 3 things that matter, from reminders + unread Gmail."""
+        self.ui.set_mode.emit("Today")
+        try:
+            facts = self._think(lambda: briefing.gather(self.reminders, self.gmail))
+            text = self._think(lambda: briefing.write(facts, self.lang))
+        except Exception as e:  # noqa: BLE001
+            actionlog.log("briefing_error", error=str(e))
+            self._say(f"Sorry, I couldn't make your briefing:\n{e}", "error")
+            return
+        briefing.save_state(last_brief=datetime.date.today().isoformat())
+        actionlog.log("briefing", text=text)
+        self.ui.attention.emit()
+        self._say(text, "info")
 
     # --- reminders ------------------------------------------------------
     def _remind(self, text: str) -> None:

@@ -20,7 +20,9 @@ from PyQt6.QtCore import QLockFile, QTimer  # noqa: E402
 from PyQt6.QtGui import QAction  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon  # noqa: E402
 
-from zavero import actionlog, reminders  # noqa: E402
+import threading  # noqa: E402
+
+from zavero import actionlog, briefing, reminders  # noqa: E402
 from zavero.messaging.gmail import GmailWatcher  # noqa: E402
 from zavero.orchestrator import Orchestrator  # noqa: E402
 from zavero.overlay import Overlay, avatar_icon  # noqa: E402
@@ -108,10 +110,14 @@ def main() -> None:
     reminder_timer.timeout.connect(check_reminders)
     reminder_timer.start(15_000)
 
-    GmailWatcher(orch, overlay).start()  # does nothing until scripts/gmail_login.py has been run
+    watcher = GmailWatcher(orch, overlay)
+    if watcher.start():  # does nothing until scripts/gmail_login.py has been run
+        orch.gmail = watcher.gmail
 
-    overlay.show_text.emit(phrase("welcome"), "info")
+    overlay.show_text.emit(phrase("welcome", {"te": "తెలుగు", "hi": "हिंदी"}.get(orch.lang, "")), "info")
     QTimer.singleShot(4000, check_reminders)  # after the welcome, show any missed ones
+    if briefing.due_this_morning() and not args.task:  # first start of the day: "what matters today"
+        QTimer.singleShot(9000, lambda: threading.Thread(target=orch.brief, daemon=True).start())
     if args.task:
         QTimer.singleShot(800, lambda: orch.start(args.task, "do" if args.do else "guide"))
 
