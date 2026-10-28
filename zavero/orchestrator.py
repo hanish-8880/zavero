@@ -5,7 +5,7 @@ import time
 
 from pynput import keyboard, mouse
 
-from zavero import actionlog, config, driver, narrator, safety
+from zavero import actionlog, config, driver, narrator, reminders, safety
 from zavero.phrases import phrase
 from zavero.brain import Brain, Step
 
@@ -70,6 +70,7 @@ class Orchestrator:
         self._guide_target: tuple[int, int] | None = None
         self._off_target = False
         self._strikes = 0
+        self.reminders = reminders.Reminders()
         mouse.Listener(on_click=self._on_click).start()
         keyboard.Listener(on_press=self._on_key).start()
 
@@ -91,6 +92,9 @@ class Orchestrator:
             return
         if intent == "stop":
             self.stop()
+            return
+        if reminders.is_reminder(text):  # handled on the side; a running guide keeps going
+            threading.Thread(target=self._remind, args=(text,), daemon=True).start()
             return
         if self.busy:
             if intent == "do" and len(_norm(text).split()) <= 4:
@@ -139,6 +143,27 @@ class Orchestrator:
         self._strikes = 0
         self._worker = threading.Thread(target=self._run, args=(text,), daemon=True)
         self._worker.start()
+
+    # --- reminders ------------------------------------------------------
+    def _remind(self, text: str) -> None:
+        """Save a reminder / important date, or list the upcoming ones."""
+        self.ui.set_mode.emit("Reminder")
+        try:
+            r = self._think(lambda: reminders.parse(text))
+        except Exception as e:  # noqa: BLE001 - tell the user, never crash the voice thread
+            actionlog.log("reminder_error", text=text, error=str(e))
+            self._say(phrase("remind_fail", text), "warn")
+            return
+        if r.get("action") == "add":
+            item = self.reminders.add(r.get("title", text), r["when"], r.get("repeat", "none"), r.get("alert", ""))
+            actionlog.log("reminder_added", **item)
+            self._say(f"{r.get('confirm', '')}\n🗓 {reminders.pretty(item['when'])}".strip(), "done")
+        elif r.get("action") == "list":
+            items = self.reminders.upcoming()
+            lines = [f"• **{reminders.pretty(it['when'])}** · {it['title']}" for it in items]
+            self._say("\n".join(lines) if lines else phrase("no_reminders", text), "info")
+        else:
+            self._say(phrase("remind_fail", text), "warn")
 
     # --- the loop -------------------------------------------------------
     def _run(self, task: str) -> None:

@@ -20,6 +20,7 @@ from PyQt6.QtCore import QLockFile, QTimer  # noqa: E402
 from PyQt6.QtGui import QAction  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon  # noqa: E402
 
+from zavero import actionlog, reminders  # noqa: E402
 from zavero.orchestrator import Orchestrator  # noqa: E402
 from zavero.overlay import Overlay, avatar_icon  # noqa: E402
 from zavero.phrases import phrase  # noqa: E402
@@ -87,7 +88,27 @@ def main() -> None:
     )
     ptt.start()
 
+    def check_reminders() -> None:
+        """Pop up anything that is due (also ones missed while Zavero was closed)."""
+        fired = orch.reminders.due()
+        if not fired:
+            return
+        lines = []
+        for it in fired:
+            late = f"  ({reminders.pretty(it['when'])})" if it["late_min"] > 5 else ""
+            lines.append(it["alert"] + late)
+        overlay.set_mode.emit("Reminder")
+        overlay.show_text.emit("\n".join(lines), "warn")
+        overlay.attention.emit()
+        for it in fired:
+            actionlog.log("reminder_fired", id=it["id"], title=it["title"], late_min=it["late_min"])
+
+    reminder_timer = QTimer()
+    reminder_timer.timeout.connect(check_reminders)
+    reminder_timer.start(15_000)
+
     overlay.show_text.emit(phrase("welcome"), "info")
+    QTimer.singleShot(4000, check_reminders)  # after the welcome, show any missed ones
     if args.task:
         QTimer.singleShot(800, lambda: orch.start(args.task, "do" if args.do else "guide"))
 

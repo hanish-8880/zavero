@@ -317,6 +317,7 @@ class Overlay(QWidget):
     set_mode = pyqtSignal(str)         # "Guide" / "Doing" / ...
     set_thinking = pyqtSignal(bool)    # thinking dots while waiting for the model
     hide_text = pyqtSignal()
+    attention = pyqtSignal()           # Chai twirls to catch the user's eye (reminders)
     _capture_sig = pyqtSignal(bool)    # blocking: hide/show around model screenshots
 
     def __init__(self) -> None:
@@ -372,6 +373,7 @@ class Overlay(QWidget):
         self.set_mode.connect(self._on_mode)
         self.set_thinking.connect(self._on_thinking)
         self.hide_text.connect(lambda: self._on_text("", self._mood))
+        self.attention.connect(lambda: setattr(self, "_twirl_at", self._t))
         self._invisible = False
         self._capture_sig.connect(self._set_invisible, Qt.ConnectionType.BlockingQueuedConnection)
 
