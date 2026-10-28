@@ -50,7 +50,7 @@ def is_reminder(text: str) -> bool:
     return any(w in t for w in TRIGGERS)
 
 
-def _json(text: str) -> dict:
+def extract_json(text: str) -> dict:
     """First {...} object in the model reply."""
     m = re.search(r"\{.*\}", text or "", re.S)
     if not m:
@@ -63,7 +63,7 @@ def parse(text: str, now: datetime | None = None) -> dict:
     now = now or datetime.now()
     prompt = f"Now: {now:%A %Y-%m-%d %H:%M} (local time)\nUser said: {text}"
     resp = config.client().responses.create(model=config.MODEL_SPARK, instructions=SYSTEM, input=prompt)
-    data = _json(resp.output_text)
+    data = extract_json(resp.output_text)
     if data.get("action") == "add":
         datetime.strptime(data["when"], TIME_FMT)  # raises if the model got the format wrong
     return data

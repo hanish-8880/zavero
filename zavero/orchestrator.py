@@ -16,7 +16,8 @@ WORDS = {
     "do": ["do it", "you do it", "you do", "chey", "cheyyi", "cheyi", "nuvve chey", "chesey", "kar do", "karo",
            "kar dijiye", "చెయ్", "చెయ్యి", "చేయి", "చేసెయ్", "చేసేయ్", "చేయండి", "కర్ దో", "कर दो", "करो", "कर दीजिए"],
     "yes": ["yes", "yeah", "yep", "ok", "okay", "sure", "haan", "haa", "han", "ha", "avunu", "avnu", "sare",
-            "theek hai", "thik hai", "అవును", "సరే", "హా", "హాం", "ఓకే", "हाँ", "हां", "हा", "ठीक है", "ओके"],
+            "theek hai", "thik hai", "అవును", "సరే", "హా", "హాం", "ఓకే", "हाँ", "हां", "हा", "ठीक है", "ओके",
+            "send", "send it", "pampu", "pampandi", "bhejo", "bhej do", "పంపు", "పంపండి", "भेजो", "भेज दो"],
     "next": ["next", "done", "ayindi", "aipoyindi", "ho gaya", "hogaya", "అయింది", "అయ్యింది", "అయిపోయింది", "हो गया"],
 }
 
@@ -342,13 +343,22 @@ class Orchestrator:
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _ask(self, question: str) -> bool:
+    def ask(self, question: str, timeout: float = 120) -> bool:
         """Ask a yes/no question in the bubble; the user answers by voice. No answer = no."""
         self._say(question, "warn")
         self._answer = None
         self._answered.clear()
         self._asking = True
-        self._answered.wait(120)
+        self._answered.wait(timeout)
         self._asking = False
-        self._check()
         return bool(self._answer)
+
+    @property
+    def idle(self) -> bool:
+        """Nothing running and no question open: a good moment to interrupt (e.g. urgent email)."""
+        return not self.busy and not self._asking
+
+    def _ask(self, question: str) -> bool:
+        answer = self.ask(question)
+        self._check()
+        return answer

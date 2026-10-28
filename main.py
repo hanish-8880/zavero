@@ -21,6 +21,7 @@ from PyQt6.QtGui import QAction  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon  # noqa: E402
 
 from zavero import actionlog, reminders  # noqa: E402
+from zavero.messaging.gmail import GmailWatcher  # noqa: E402
 from zavero.orchestrator import Orchestrator  # noqa: E402
 from zavero.overlay import Overlay, avatar_icon  # noqa: E402
 from zavero.phrases import phrase  # noqa: E402
@@ -106,6 +107,8 @@ def main() -> None:
     reminder_timer = QTimer()
     reminder_timer.timeout.connect(check_reminders)
     reminder_timer.start(15_000)
+
+    GmailWatcher(orch, overlay).start()  # does nothing until scripts/gmail_login.py has been run
 
     overlay.show_text.emit(phrase("welcome"), "info")
     QTimer.singleShot(4000, check_reminders)  # after the welcome, show any missed ones
