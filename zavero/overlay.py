@@ -318,6 +318,8 @@ class Overlay(QWidget):
     set_thinking = pyqtSignal(bool)    # thinking dots while waiting for the model
     hide_text = pyqtSignal()
     attention = pyqtSignal()           # Chai twirls to catch the user's eye (reminders)
+    show_board = pyqtSignal(bytes, list, float)  # PNG of a diagram, marks [{fx, fy, label}], its x on screen 0..1
+    hide_board = pyqtSignal()
     _capture_sig = pyqtSignal(bool)    # blocking: hide/show around model screenshots
 
     def __init__(self) -> None:
@@ -374,6 +376,9 @@ class Overlay(QWidget):
         self.set_thinking.connect(self._on_thinking)
         self.hide_text.connect(lambda: self._on_text("", self._mood))
         self.attention.connect(lambda: setattr(self, "_twirl_at", self._t))
+        self._board: tuple[QImage, list, float, float] | None = None  # image, marks, side, start time
+        self.show_board.connect(self._on_board)
+        self.hide_board.connect(lambda: (setattr(self, "_board", None), self.update()))
         self._invisible = False
         self._capture_sig.connect(self._set_invisible, Qt.ConnectionType.BlockingQueuedConnection)
 
@@ -473,6 +478,12 @@ class Overlay(QWidget):
         if mood == "done" and text:  # finished messages fade away on their own
             QTimer.singleShot(10_000, lambda: self._text == text and self._on_text("", mood))
 
+    def _on_board(self, png: bytes, marks: list, side: float) -> None:
+        img = QImage.fromData(png)
+        self._board = (img, marks, side, self._t) if not img.isNull() else None
+        self._target = None
+        self.update()
+
     def _on_point(self, x: int, y: int) -> None:
         self._target = self.local(x, y)
         if self._drag is None:
@@ -548,6 +559,8 @@ class Overlay(QWidget):
             p.setBrush(Qt.BrushStyle.NoBrush)
             r = 6 + 32 * age
             p.drawEllipse(pos, r, r)
+        if self._board:
+            self._paint_board(p)
         if self._text:  # Chai itself is painted by its own window (_ChaiWindow)
             self._paint_bubble(p)
 
@@ -700,6 +713,81 @@ class Overlay(QWidget):
         doc.drawContents(p)
         p.restore()
 
+    def _paint_board(self, p: QPainter) -> None:
+        """Enlarged diagram in a glass panel, with numbered marks drawn on it one by one."""
+        img, marks, side, born = self._board
+        iw, ih = img.width() / self._dpr, img.height() / self._dpr  # logical size of the crop
+        k = min(min(640, self.width() * 0.47) / iw, min(460, self.height() * 0.6) / ih, 3.0)  # enlarge, max 3x
+        w, h, pad, head = iw * k, ih * k, 12, 26
+        W, H = w + 2 * pad, h + 2 * pad + head
+        x = self.width() - W - 28 if side < 0.5 else 28  # opposite side from the real diagram
+        panel = QRectF(x, 48, W, H)
+        self._board_rect = panel  # the bubble keeps out of it
+        p.setPen(Qt.PenStyle.NoPen)
+        for grow, alpha in ((14, 10), (8, 14), (3, 20)):
+            p.setBrush(QColor(15, 23, 42, alpha))
+            p.drawRoundedRect(panel.adjusted(-grow / 2, grow / 3, grow / 2, grow), 20, 20)
+        p.setBrush(QColor(255, 255, 255, 238))
+        p.setPen(QPen(QColor(255, 255, 255, 220), 1))
+        p.drawRoundedRect(panel, 18, 18)
+        p.setPen(QColor(71, 85, 105))
+        head_font = ui_font(7.5, bold=True)
+        head_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.8)
+        p.setFont(head_font)
+        p.drawText(QRectF(x + pad + 4, 48 + 6, W - 2 * pad, 18), Qt.AlignmentFlag.AlignLeft, "ZAVERO · DIAGRAM")
+        p.setFont(ui_font(7.5))
+        p.drawText(QRectF(x + pad, 48 + 6, W - 2 * pad - 4, 18), Qt.AlignmentFlag.AlignRight, "Esc to close")
+
+        area = QRectF(x + pad, 48 + head + pad - 4, w, h)
+        p.save()
+        clip = QPainterPath()
+        clip.addRoundedRect(area, 10, 10)
+        p.setClipPath(clip)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        p.drawImage(area, img)
+        p.restore()
+
+        ink = QColor("#FF4D2E")
+        age = self._t - born
+        shown = min(len(marks), int(age / 0.8) + 1)  # a new mark every 0.8 s, like a teacher drawing
+        pts = [area.topLeft() + QPointF(m["fx"] * w, m["fy"] * h) for m in marks]
+        for i in range(1, shown):  # dashed path from one part to the next
+            grow = min(1.0, (age - i * 0.8) / 0.45)
+            a, b = pts[i - 1], pts[i - 1] + (pts[i] - pts[i - 1]) * grow
+            pen = QPen(QColor(255, 77, 46, 120), 1.6, Qt.PenStyle.DashLine)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            p.drawLine(a, b)
+        for i in range(shown):
+            m, c = marks[i], pts[i]
+            t = age - i * 0.8
+            r = 12 * min(1.0, t / 0.25)
+            if i == shown - 1:  # newest mark pulses
+                ring = QColor(ink)
+                ring.setAlphaF(max(0.0, 0.5 - 0.25 * math.sin(self._t * 5)))
+                p.setPen(QPen(ring, 3))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawEllipse(c, r + 7, r + 7)
+            p.setPen(QPen(QColor("white"), 2.5))
+            p.setBrush(ink)
+            p.drawEllipse(c, r, r)
+            if t < 0.2:
+                continue
+            p.setPen(QColor("white"))
+            p.setFont(ui_font(9, bold=True))
+            p.drawText(QRectF(c.x() - 12, c.y() - 12, 24, 24), Qt.AlignmentFlag.AlignCenter, str(i + 1))
+            if m.get("label"):  # label pill above the mark (below if no room), so the diagram text stays visible
+                p.setFont(ui_font(8.5, bold=True))
+                tw = p.fontMetrics().horizontalAdvance(m["label"]) + 16
+                lx = min(max(c.x() - tw / 2, panel.left() + 6), panel.right() - tw - 6)
+                ly = c.y() - r - 30 if c.y() - r - 30 > area.top() else c.y() + r + 8
+                pill = QRectF(lx, ly, tw, 22)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(17, 24, 39, 215))
+                p.drawRoundedRect(pill, 11, 11)
+                p.setPen(QColor("white"))
+                p.drawText(pill, Qt.AlignmentFlag.AlignCenter, m["label"])
+
     def _bubble_rect(self, w: float, h: float) -> QRectF:
         """Place the bubble beside the avatar, on-screen, not covering the target."""
         a, gap = self._avatar, R + 14
@@ -710,10 +798,17 @@ class Overlay(QWidget):
             QRectF(a.x() - w / 2, a.y() + gap, w, h),       # below
         ]
         screen = QRectF(8, 8, self.width() - 16, self.height() - 16)
+        board = getattr(self, "_board_rect", None) if self._board else None
+        if board is not None:  # a diagram panel is open: bubble below it, else beside it
+            candidates[:0] = [QRectF(board.right() - w, board.bottom() + 12, w, h),
+                              QRectF(board.left() - w - 12, board.top(), w, h),
+                              QRectF(board.right() + 12, board.top(), w, h)]
         for r in candidates:
             if not screen.contains(r):
                 continue
             if self._target is not None and r.adjusted(-30, -30, 30, 30).contains(self._target):
+                continue
+            if board is not None and r.intersects(board):
                 continue
             return r
         r = candidates[0]

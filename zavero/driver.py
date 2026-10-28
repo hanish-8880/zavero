@@ -9,7 +9,7 @@ import ctypes
 import io
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from PIL import Image
 
@@ -39,6 +39,7 @@ class Shot:
     scale: float  # real_px = model_px * scale
     left: int = 0
     top: int = 0
+    full: Image.Image | None = field(default=None, repr=False)  # full-resolution capture, if kept
 
 
 def resize_for_model(img: Image.Image, target_width: int = config.SCREENSHOT_WIDTH) -> tuple[Image.Image, float]:
@@ -62,7 +63,7 @@ def encode(img: Image.Image) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
-def screenshot(monitor: int = 1) -> Shot:
+def screenshot(monitor: int = 1, keep_full: bool = False) -> Shot:
     """Capture a monitor (1 = primary) and prepare it for the model."""
     import mss
 
@@ -72,7 +73,18 @@ def screenshot(monitor: int = 1) -> Shot:
         raw = sct.grab(mon)
     img = Image.frombytes("RGB", raw.size, raw.rgb)
     small, scale = resize_for_model(img)
-    return Shot(encode(small), small.width, small.height, scale, mon["left"], mon["top"])
+    return Shot(encode(small), small.width, small.height, scale, mon["left"], mon["top"],
+                img if keep_full else None)
+
+
+def crop_png(shot: Shot, x: float, y: float, w: float, h: float) -> bytes:
+    """Sharp PNG of a region given in model pixels, cut from the full-resolution capture."""
+    img = shot.full
+    box = [round(v * shot.scale) for v in (x, y, x + w, y + h)]
+    box = [max(0, box[0]), max(0, box[1]), min(img.width, box[2]), min(img.height, box[3])]
+    buf = io.BytesIO()
+    img.crop(box).save(buf, format="PNG")
+    return buf.getvalue()
 
 
 # pyautogui key names differ from the model's (xdotool-style) names.

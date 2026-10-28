@@ -89,6 +89,8 @@ class Orchestrator:
         """Called with each final transcript from voice.py."""
         intent = classify(text)
         actionlog.log("heard", text=text, intent=intent)
+        if not self._asking:
+            self.ui.hide_board.emit()  # a new request closes the enlarged diagram
         if len(_norm(text).split()) > 2 and lang(text) != self.lang:
             self.lang = lang(text)
             briefing.save_state(lang=self.lang)
@@ -145,6 +147,8 @@ class Orchestrator:
             self._acted.set()
 
     def _on_key(self, key) -> None:
+        if key == keyboard.Key.esc:
+            self.ui.hide_board.emit()
         if key == keyboard.Key.esc and self.busy:
             self.stop()
         elif key == keyboard.Key.enter and self._waiting:
@@ -192,21 +196,32 @@ class Orchestrator:
     # --- "what is this?" ---------------------------------------------------
     def _talk(self, text: str) -> None:
         """Quick answer about the screen, pointing at the thing it explains."""
-        self.ui.set_mode.emit("Explain")
+        draw = talk.is_diagram(text)
+        self.ui.set_mode.emit("Diagram" if draw else "Explain")
         mouse_at = tuple(int(v) for v in mouse.Controller().position)
         try:
-            shot = self._screenshot()
-            res = self._think(lambda: talk.answer(self._with_context(text), shot, mouse_at, lang(text)))
+            self.ui.hide_for_capture()
+            try:
+                shot = driver.screenshot(keep_full=draw)  # full resolution kept for a sharp enlarged copy
+            finally:
+                self.ui.show_after_capture()
+            res = self._think(lambda: talk.answer(self._with_context(text), shot, mouse_at, lang(text), draw))
         except Exception as e:  # noqa: BLE001
             actionlog.log("talk_error", text=text, error=str(e))
             self._say(f"Sorry, I couldn't look at your screen:\n{e}", "error")
             return
-        if res["point"]:
+        reply = res["answer"]
+        if res["region"]:
+            r = res["region"]
+            side = (r["x"] + r["w"] / 2) / shot.width
+            self.ui.show_board.emit(driver.crop_png(shot, r["x"], r["y"], r["w"], r["h"]), res["marks"], side)
+            reply += "\n" + "\n".join(f"**{i}. {m['label']}** – {m['detail']}" for i, m in enumerate(res["marks"], 1))
+        elif res["point"]:
             self.ui.point_at.emit(*driver.to_screen(res["point"]["x"], res["point"]["y"], shot))
         self._remember("user", text)
-        self._remember("zavero", res["answer"])
-        actionlog.log("talk", question=text, answer=res["answer"], point=res["point"])
-        self._say(res["answer"], "info")
+        self._remember("zavero", reply)
+        actionlog.log("talk", question=text, answer=reply, point=res["point"], region=res["region"])
+        self._say(reply, "info")
 
     # --- "what matters today?" -------------------------------------------
     def brief(self) -> None:
