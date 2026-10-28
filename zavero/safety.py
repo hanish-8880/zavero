@@ -1,11 +1,16 @@
 """Risky-action rules. Zavero asks before risky steps and never types secrets."""
 import re
 
-RISKY_WORDS = [
-    "pay", "payment", "submit", "confirm", "send", "delete", "remove", "purchase",
-    "buy", "transfer", "logout", "log out", "sign out", "install", "uninstall",
-    "checkout", "place order",
-]
+# brain.py tells the model to start its note with this when the click is a final, consequential one.
+MODEL_FLAG = "approval needed"
+# A clicked label that starts or ends with one of these is a final action ("Pay Now", "Proceed to Pay").
+# Navigation like "Quick Pay" or "Bill Payment" menus only open a page, so they don't count.
+FINAL_START = ["pay", "make payment", "submit", "confirm", "send", "delete", "remove", "buy", "place order",
+               "checkout", "transfer", "purchase", "install", "uninstall", "log out", "logout", "sign out"]
+FINAL_END = ["to pay", "to payment", "and pay", "pay now", "submit", "confirm", "send", "delete", "place order",
+             "buy now", "checkout"]
+_VERB = r"(?:click|clicking|press|pressing|tap|tapping|select|selecting|choose|choosing|hit|hitting)"
+_STOP = r"(?=\s+(?:to|so|for|and|which|that|then|in|on|at)\b|[,.;:!?(]|$)"
 # Meta's API attaches this to every computer action. In do mode, the user's "do it" covers it
 # unless the step is risky (decided with the developer, Oct 27).
 GENERIC_CHECK = "computer_action_requires_confirmation"
@@ -28,11 +33,30 @@ def _has_word(text: str, words: list[str]) -> str | None:
     return None
 
 
+def target_labels(model_text: str) -> list[str]:
+    """The on-screen labels the step will click: quoted ones first, else the words after 'click'."""
+    quoted = re.findall(r'["“]([^"”]{1,40})["”]|\*\*([^*]{1,40})\*\*', model_text)
+    labels = [a or b for a, b in quoted]
+    if not labels:
+        labels = re.findall(rf"{_VERB}\s+(?:on\s+)?(?:the\s+)?(.{{1,50}}?){_STOP}", model_text, re.I)
+    clean = []
+    for lab in labels:
+        lab = re.sub(r"\b(button|link|tab|option|icon|menu)\b", " ", lab.lower())
+        clean.append(" ".join(re.sub(r"[^\w\s₹]", " ", lab).split()))
+    return [c for c in clean if c]
+
+
 def risky_reason(model_text: str, actions) -> str | None:
-    """Return why this step needs the user's OK, or None if it looks safe."""
-    text = " ".join([model_text, *_typed(actions)]).lower()
-    word = _has_word(text, RISKY_WORDS)
-    return f'"{word}" step' if word else None
+    """Return why this step needs the user's OK, or None if it looks safe.
+
+    Only the button being pressed counts, not the goal: while paying a bill, clicking "New tab"
+    or "Quick Pay" is fine, but "Pay Now" / "Proceed to Pay" / "Submit" must be approved."""
+    if MODEL_FLAG in model_text.lower():
+        return "this is a final step"
+    for lab in target_labels(model_text):
+        if any(lab == w or lab.startswith(w + " ") for w in FINAL_START) or any(lab.endswith(w) for w in FINAL_END):
+            return f'"{lab}" step'
+    return None
 
 
 def secret_reason(model_text: str, actions) -> str | None:

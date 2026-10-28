@@ -14,8 +14,10 @@ from zavero.brain import Brain, Step
 WORDS = {
     "stop": ["stop", "aagu", "aapu", "aapandi", "ruko", "ruk", "bas", "ఆగు", "ఆపు", "ఆపండి", "రుకో", "रुको", "रुक", "बस"],
     "no": ["no", "nope", "nahi", "nahin", "vaddu", "oddu", "cancel", "don't", "వద్దు", "కాదు", "नहीं", "नही", "मत"],
-    "do": ["do it", "you do it", "you do", "chey", "cheyyi", "cheyi", "nuvve chey", "chesey", "kar do", "karo",
-           "kar dijiye", "చెయ్", "చెయ్యి", "చేయి", "చేసెయ్", "చేసేయ్", "చేయండి", "కర్ దో", "कर दो", "करो", "कर दीजिए"],
+    "do": ["do it", "you do it", "you do", "do for me", "do it for me", "please do", "you can do",
+           "chey", "cheyyi", "cheyi", "nuvve chey", "chesey", "naku chey", "kar do", "karo", "aap karo", "tum karo",
+           "kar dijiye", "mere liye kar", "చెయ్", "చెయ్యి", "చేయి", "చేసెయ్", "చేసేయ్", "చేయండి", "నువ్వే చెయ్",
+           "కర్ దో", "कर दो", "करो", "कर दीजिए", "आप करो"],
     "yes": ["yes", "yeah", "yep", "ok", "okay", "sure", "haan", "haa", "han", "ha", "avunu", "avnu", "sare",
             "theek hai", "thik hai", "అవును", "సరే", "హా", "హాం", "ఓకే", "हाँ", "हां", "हा", "ठीक है", "ओके",
             "send", "send it", "pampu", "pampandi", "bhejo", "bhej do", "పంపు", "పంపండి", "भेजो", "भेज दो"],
@@ -107,7 +109,8 @@ class Orchestrator:
             threading.Thread(target=self.brief, daemon=True).start()
             return
         if self.busy:
-            if intent == "do" and len(_norm(text).split()) <= 4:
+            if intent == "do":  # "do it" / "you do for me ..." mid-task: same task, Zavero takes over
+                self._remember("user", text)
                 self.mode = "do"
                 self.ui.set_mode.emit("Doing")
                 self._acted.set()
@@ -155,8 +158,28 @@ class Orchestrator:
         self.mode = mode
         self._cancel.clear()
         self._strikes = 0
-        self._worker = threading.Thread(target=self._run, args=(text,), daemon=True)
+        task = self._with_context(text)  # earlier turns, so "APSPDCL" answers "which company?"
+        self._remember("user", text)
+        self._worker = threading.Thread(target=self._run, args=(task,), daemon=True)
         self._worker.start()
+
+    # --- short conversation memory ---------------------------------------
+    MEMORY_S = 15 * 60  # what was said in the last 15 minutes counts as the same conversation
+
+    def _remember(self, who: str, text: str) -> None:
+        now = time.monotonic()
+        self._history = [h for h in getattr(self, "_history", []) if now - h[0] < self.MEMORY_S][-7:]
+        self._history.append((now, who, text))
+
+    def _with_context(self, text: str) -> str:
+        """The new request, with the recent conversation in front of it."""
+        now = time.monotonic()
+        recent = [h for h in getattr(self, "_history", []) if now - h[0] < self.MEMORY_S]
+        if not recent:
+            return text
+        lines = [f"{'User' if who == 'user' else 'You (Zavero)'}: {t}" for _, who, t in recent]
+        return ("Earlier in this conversation (oldest first):\n" + "\n".join(lines)
+                + f"\n\nThe user now says: {text}")
 
     # --- "what matters today?" -------------------------------------------
     def brief(self) -> None:
@@ -198,8 +221,9 @@ class Orchestrator:
     # --- the loop -------------------------------------------------------
     def _run(self, task: str) -> None:
         ui = self.ui
+        said = self.user_text  # the user's latest words: decides the bubble language
         self._set_step(1)
-        self._say(phrase("looking", task), "info")
+        self._say(phrase("looking", said), "info")
         actionlog.log("task", text=task, mode=self.mode)
         brain = Brain(task)
         try:
@@ -221,17 +245,20 @@ class Orchestrator:
                 result = self._think(lambda: brain.next(step, shot, acked))
                 self._set_step(brain.steps)
             ui.go_home.emit()
-            self._say(self._think(lambda: narrator.narrate("final", task, result)), "done")
+            self._remember("zavero", result)
+            self._say(self._think(lambda: narrator.narrate("final", said, result)), "done")
             actionlog.log("finished", text=result)
         except Cancelled:
             ui.go_home.emit()
-            self._say(phrase("stopped", task), "done")
+            self._remember("zavero", "(the user stopped this task)")
+            self._say(phrase("stopped", said), "done")
             actionlog.log("stopped")
         except GuideEnded as e:
             ui.go_home.emit()
+            self._remember("zavero", f"(guide paused: {e})")
             note = ("The user stopped following the steps, so you paused the guide. "
                     "Tell them kindly to hold Right Ctrl whenever they need help again.")
-            self._say(narrator.narrate("final", task, note), "done")
+            self._say(narrator.narrate("final", said, note), "done")
             actionlog.log("guide_ended", reason=str(e))
         except Exception as e:  # noqa: BLE001 - show every problem to the user
             ui.go_home.emit()
