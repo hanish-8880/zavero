@@ -135,6 +135,11 @@ class Orchestrator:
         if reminders.is_reminder(text):  # handled on the side; a running guide keeps going
             threading.Thread(target=self._remind, args=(text,), daemon=True).start()
             return
+        if self._feedback_next or re.search(actionlog.FEEDBACK_WORDS, text.lower()):
+            self._feedback_next = False
+            actionlog.feedback(text)
+            self._say(phrase("feedback_thanks", text), "done")
+            return
         platform = writer.platform_of(text)
         if platform and not self.busy:  # "post this on LinkedIn": write it, show it, post only after a yes
             threading.Thread(target=self._post, args=(text, platform), daemon=True).start()
@@ -166,6 +171,13 @@ class Orchestrator:
             self.start(self.user_text, "do")  # "do it" after a guided task -> redo it for them
             return
         self.start(text, "do" if intent == "do" or self._answers_do_question() else "guide")
+
+    _feedback_next = False
+
+    def ask_feedback(self) -> None:
+        """Tray "Send feedback": the next thing the user says is saved as a bug report."""
+        self._feedback_next = True
+        self._say(phrase("feedback_ask", self.user_text), "info")
 
     def _answers_do_question(self) -> bool:
         """True if Zavero just finished a do-mode task by asking something: the reply keeps do mode."""

@@ -51,3 +51,19 @@ def test_goes_home_when_done():
     ov._t += ov.ACTIVE_S + 1  # nothing new for a while
     ov._step_follow()
     assert ov._flight is not None and ov._flight[2] == ov._home
+
+
+def test_only_while_i_talk_fades_out():
+    ov = _overlay()
+    ov.show_mode = "talk"
+    ov._on_listening(True)
+    ov._step_visibility()
+    assert ov._opacity == 1.0
+    ov._on_listening(False)
+    ov._t += ov.ACTIVE_S + 1
+    for _ in range(30):  # 0.5 s of frames
+        ov._step_visibility()
+    assert ov._opacity == 0.0
+    ov.show_mode = "always"
+    ov._step_visibility()
+    assert ov._opacity == 1.0

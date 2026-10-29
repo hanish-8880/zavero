@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon  # noqa: E402
 
 import threading  # noqa: E402
 
-from zavero import actionlog, briefing, reminders  # noqa: E402
+from zavero import actionlog, briefing, phrases, reminders  # noqa: E402
 from zavero.messaging.gmail import GmailWatcher  # noqa: E402
 from zavero.orchestrator import Orchestrator  # noqa: E402
 from zavero.overlay import Overlay, avatar_icon  # noqa: E402
@@ -54,15 +54,38 @@ def main() -> None:
     tray = QSystemTrayIcon(avatar_icon(), app)
     tray.setToolTip("Zavero - hold Right Ctrl and speak")
     menu = QMenu()
-    overlay.follow_mode = briefing.load_state().get("chai_follow", "auto")
-    follow_menu = menu.addMenu("Chai position")
-    follow_group = QActionGroup(follow_menu)
-    for mode, label in (("auto", "Follow my mouse while helping"), ("always", "Always follow my mouse"),
-                        ("corner", "Stay in the corner")):
-        act = QAction(label, follow_menu, checkable=True, checked=overlay.follow_mode == mode)
-        act.triggered.connect(lambda _, m=mode: (setattr(overlay, "follow_mode", m), briefing.save_state(chai_follow=m)))
-        follow_group.addAction(act)
-        follow_menu.addAction(act)
+    state = briefing.load_state()
+
+    def set_speed(v: str) -> None:
+        config.REASONING["effort"] = v  # read by every model call
+
+    # Settings: (saved key, menu title, default, choices, apply). Saved in data/state.json.
+    settings = [
+        ("show_mode", "Show Zavero", "always", [("always", "Always"), ("talk", "Only while I talk")],
+         lambda v: setattr(overlay, "show_mode", v)),
+        ("chai_follow", "Chai position", "auto", [("auto", "Follow my mouse while helping"),
+                                                  ("always", "Always follow my mouse"),
+                                                  ("corner", "Stay in the corner")],
+         lambda v: setattr(overlay, "follow_mode", v)),
+        ("lang_mode", "Language", "auto", [("auto", "Auto (same as I speak)"), ("te", "తెలుగు"), ("hi", "हिंदी"),
+                                           ("en", "English")],
+         lambda v: setattr(phrases, "FORCED", None if v == "auto" else v)),
+        ("speed", "Speed", "low", [("low", "Fast"), ("medium", "Careful (slower, thinks more)")], set_speed),
+    ]
+    for key, title, default, choices, apply in settings:
+        current = state.get(key, default)
+        apply(current)
+        sub = menu.addMenu(title)
+        group = QActionGroup(sub)
+        for value, label in choices:
+            act = QAction(label, sub, checkable=True, checked=current == value)
+            act.triggered.connect(lambda _, k=key, v=value, f=apply: (f(v), briefing.save_state(**{k: v})))
+            group.addAction(act)
+            sub.addAction(act)
+    menu.addSeparator()
+    feedback_action = QAction("Send feedback (say the problem)", menu)
+    feedback_action.triggered.connect(orch.ask_feedback)
+    menu.addAction(feedback_action)
     stop_action = QAction("Stop current task", menu)
     stop_action.triggered.connect(orch.stop)
     quit_action = QAction("Quit Zavero", menu)

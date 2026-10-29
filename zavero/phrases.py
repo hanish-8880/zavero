@@ -48,6 +48,16 @@ PHRASES = {
         "te": "సరే, పోస్ట్ చేయను 🙂",
         "hi": "ठीक है, पोस्ट नहीं करूँगा 🙂",
     },
+    "feedback_ask": {
+        "en": "Tell me what went wrong 🙏 Hold **Right Ctrl** and speak.",
+        "te": "ఏం తప్పు జరిగిందో చెప్పండి 🙏 **Right Ctrl** పట్టుకుని మాట్లాడండి.",
+        "hi": "बताइए क्या गड़बड़ हुई 🙏 **Right Ctrl** दबाकर बोलिए।",
+    },
+    "feedback_thanks": {
+        "en": "Thanks! Saved for the team 🙏",
+        "te": "ధన్యవాదాలు! టీమ్ కోసం సేవ్ చేశాను 🙏",
+        "hi": "धन्यवाद! टीम के लिए सेव कर लिया 🙏",
+    },
     "api_down": {
         "en": "I can't reach the internet right now 📶 Please check your connection and try again.",
         "te": "ఇప్పుడు ఇంటర్నెట్ అందడం లేదు 📶 కనెక్షన్ చూసి మళ్ళీ ప్రయత్నించండి.",
@@ -76,8 +86,14 @@ PHRASES = {
 }
 
 
+FORCED: str | None = None  # tray "Language": 'te' / 'hi' / 'en' always, or None = follow the user's speech
+LANG_NAMES = {"te": "Telugu (Telugu script)", "hi": "Hindi (Devanagari)", "en": "simple English"}
+
+
 def lang(text: str) -> str:
     """'te' for Telugu script, 'hi' for Devanagari, else 'en' (also covers Hinglish)."""
+    if FORCED:
+        return FORCED
     if re.search(r"[ఀ-౿]", text or ""):
         return "te"
     if re.search(r"[ऀ-ॿ]", text or ""):

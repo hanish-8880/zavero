@@ -423,6 +423,9 @@ class Overlay(QWidget):
         self._label, self._label_born, self._label_at = "", 0.0, [0.0]  # chip text, start, per-char times
         self.follow_mode = "auto"   # set from main.py (saved in data/state.json); see FOLLOW_MODES
         self._following = False
+        self.show_mode = "always"   # or "talk": only while the user talks / Zavero helps (tray, state.json)
+        self._opacity = 1.0
+        self._through = False
         self._vel = QPointF()
         self._active_at = -99.0
 
@@ -508,7 +511,7 @@ class Overlay(QWidget):
 
     def is_on_avatar(self, x: int, y: int) -> bool:
         """True if real screen px (x, y) is on Chai (safe to call from any thread)."""
-        return not self._invisible and self._on_chai(self.local(x, y))
+        return not self._invisible and self._opacity > 0 and self._on_chai(self.local(x, y))
 
     # --- dragging Chai (events come from _ChaiWindow, in overlay coordinates) ----
     def _drag_start(self, pos: QPointF) -> None:
@@ -631,9 +634,23 @@ class Overlay(QWidget):
             self._vel = QPointF()
             if self._target is None and self._flight is None and self._drag is None:
                 self._fly_to(self._home)
-        if following != self._following:
-            self._chai.set_click_through(following)  # a riding Chai must never catch the user's clicks
         self._following = following
+
+    def _step_visibility(self) -> None:
+        """Tray "Only while I talk": appear on the hotkey, fade out (0.4 s) once Zavero is done helping."""
+        want = (self.show_mode == "always" or self._listening or self._thinking or self._target is not None
+                or bool(self._board) or self._drag is not None or self._flight is not None
+                or (bool(self._text) and self._t - self._active_at < self.ACTIVE_S))
+        op = 1.0 if want else max(0.0, self._opacity - self._dt / 0.4)
+        if op != self._opacity:
+            self._opacity = op
+            self.setWindowOpacity(op)
+            self._chai.setWindowOpacity(op)
+        # A riding or faded-out Chai must never catch the user's clicks.
+        through = self._following or op == 0
+        if through != self._through:
+            self._through = through
+            self._chai.set_click_through(through)
 
     def _on_mode(self, mode: str) -> None:
         self._mode = mode
@@ -677,6 +694,7 @@ class Overlay(QWidget):
         speed = math.hypot(d.x(), d.y()) / max(dt, 1e-3)
         self._cursor = cur
         self._step_follow()
+        self._step_visibility()
         hover = self._on_chai(cur) and not self._invisible  # catch clicks only while the mouse is on Chai
         if self._drag is None and hover != self._hover:
             self._chai.setCursor(Qt.CursorShape.OpenHandCursor if hover else Qt.CursorShape.ArrowCursor)

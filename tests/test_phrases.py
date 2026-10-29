@@ -26,3 +26,25 @@ def test_friendly_errors():
 def test_every_phrase_has_three_languages():
     for key, langs in PHRASES.items():
         assert set(langs) == {"en", "te", "hi"}, key
+
+
+def test_feedback_words():
+    import re
+
+    from zavero.actionlog import FEEDBACK_WORDS
+
+    for t in ["report a bug", "I want to send feedback", "zavero lo problem undi", "zavero mein dikkat hai"]:
+        assert re.search(FEEDBACK_WORDS, t.lower()), t
+    for t in ["ee site lo problem undi", "payment mein dikkat hai", "what is this error"]:
+        assert not re.search(FEEDBACK_WORDS, t.lower()), t
+
+
+def test_forced_language():
+    from zavero import phrases
+
+    phrases.FORCED = "te"
+    try:
+        assert phrases.lang("hello") == "te"
+    finally:
+        phrases.FORCED = None
+    assert phrases.lang("hello") == "en"

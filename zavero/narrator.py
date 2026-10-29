@@ -1,5 +1,5 @@
 """Turns the model's next step into short bubble text in the user's language."""
-from zavero import config
+from zavero import config, phrases
 
 # Tone rules for every text a beginner reads (adapted from Clicky's prompt).
 STYLE = (
@@ -64,6 +64,8 @@ def narrate(kind: str, user_text: str, model_text: str, actions=(), reason: str 
         f"Planned actions: {describe_actions(actions)}\n"
         f"Task: {KINDS[kind].format(reason=reason)}"
     )
+    if phrases.FORCED:  # the user picked a language in the tray menu
+        prompt += f"\nAlways reply in {phrases.LANG_NAMES[phrases.FORCED]}, whatever language the request is in."
     try:
         resp = config.client().responses.create(
             model=config.MODEL_SPARK, instructions=SYSTEM, input=prompt, reasoning=config.REASONING,
