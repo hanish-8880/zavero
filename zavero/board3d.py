@@ -1,6 +1,7 @@
-"""The 3D board: a rotating teaching model (talk.clean_scene) floating over the desktop.
+"""The 3D board: a rotating teaching model (talk.clean_scene) on a white rounded card over the desktop.
 
-A frameless, transparent, always-on-top web view running three.js (bundled in zavero/web, works offline).
+A frameless, always-on-top web view (transparent window, white card inside) running three.js (bundled in
+zavero/web, works offline). The camera fits the whole model inside the card.
 Parts appear step by step; the bubble explains the current step. Next -> (bubble button, the page's own
 button, or saying next / inka / aage) shows the next step; the model also moves on by itself every AUTO_S.
 Drag = turn, scroll = zoom, Esc / ✕ = close. Create and use it only in the GUI thread (Overlay does).
@@ -48,7 +49,7 @@ class Board3D(QWebEngineView):
         self.scene, self.step = scene, 1
         area = QApplication.primaryScreen().availableGeometry()
         w, h = SIZE
-        self.setGeometry(area.right() - w - 24, area.top() + 36, w, h)  # top right; Chai and the bubble stay below
+        self.setGeometry(area.right() - w - 24, area.top() + 64, w, h)  # top right, below the browser bar; Chai and the bubble stay below
         self.show()
         if self._ready:
             self._load()
