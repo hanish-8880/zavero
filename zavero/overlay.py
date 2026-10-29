@@ -320,6 +320,15 @@ class _ChaiWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.resize(CHAI_W, CHAI_H)
 
+    def set_click_through(self, on: bool) -> None:
+        """While Chai rides next to the mouse, clicks must go to the app underneath (WS_EX_TRANSPARENT)."""
+        if sys.platform != "win32" or not self.isVisible():
+            return
+        hwnd = int(self.winId())
+        user32 = ctypes.windll.user32
+        ex = user32.GetWindowLongW(hwnd, -20)  # GWL_EXSTYLE
+        user32.SetWindowLongW(hwnd, -20, (ex | 0x20) if on else (ex & ~0x20))
+
     def offset(self) -> QPointF:
         """This window's top-left in overlay coordinates."""
         g = self.ov.geometry()
@@ -412,6 +421,10 @@ class Overlay(QWidget):
         self._bubble_last = QRectF()
         self._target_last = QRectF()
         self._label, self._label_born, self._label_at = "", 0.0, [0.0]  # chip text, start, per-char times
+        self.follow_mode = "auto"   # set from main.py (saved in data/state.json); see FOLLOW_MODES
+        self._following = False
+        self._vel = QPointF()
+        self._active_at = -99.0
 
         if sys.platform == "win32":  # 1 ms timer resolution so 16 ms frames are really 16 ms
             ctypes.windll.winmm.timeBeginPeriod(1)
@@ -531,6 +544,8 @@ class Overlay(QWidget):
     def _on_text(self, text: str, mood: str) -> None:
         old = self._text
         self._text, self._mood = text, mood
+        if text and text != old:
+            self._active_at = self._t
         if text:
             _, w, h = self._bubble_doc(text)
             self._bubble_size = (w, h)
@@ -570,16 +585,55 @@ class Overlay(QWidget):
 
     def _on_home(self) -> None:
         self._target = None
-        if self._drag is None:
+        if self._drag is None and not self._should_follow():  # while following, the spring takes over
             self._fly_to(self._home)
 
     def _on_listening(self, on: bool) -> None:
         self._listening = on
+        self._active_at = self._t
         self.update()
 
     def _on_thinking(self, on: bool) -> None:
         self._thinking = on
+        self._active_at = self._t
         self.update()
+
+    # --- follow the mouse (F27) -----------------------------------------
+    FOLLOW_MODES = ("auto", "always", "corner")  # auto = ride beside the mouse while helping, corner when idle
+    FOLLOW_GAP = QPointF(48, 40)                 # Clicky rides +35/+25 with a tiny cursor; Chai is bigger
+    ACTIVE_S = 12                                # after the last message, "helping" lasts this long
+
+    def _should_follow(self) -> bool:
+        if (self.follow_mode == "corner" or self._drag is not None or self._flight is not None
+                or self._target is not None or self._board or self._invisible):
+            return False
+        if self.follow_mode == "always":
+            return True
+        return self._listening or self._thinking or (bool(self._text) and self._t - self._active_at < self.ACTIVE_S)
+
+    def _follow_goal(self) -> QPointF:
+        """Below-right of the cursor, flipped near the screen edges so Chai never hides off-screen."""
+        c, g = self._cursor, self.FOLLOW_GAP
+        x = c.x() + g.x() if c.x() + g.x() + R + 8 < self.width() else c.x() - g.x()
+        y = c.y() + g.y() if c.y() + g.y() + R + 12 < self.height() else c.y() - g.y()
+        return self._clamp(QPointF(x, y))
+
+    def _step_follow(self) -> None:
+        following = self._should_follow()
+        if following:  # critically damped spring: same feel as Clicky's buddy
+            dt = self._dt
+            self._vel += (self._follow_goal() - self._avatar) * (180 * dt)
+            self._vel *= 0.75 ** (dt * 60)
+            step = self._vel * dt
+            if math.hypot(step.x(), step.y()) > 0.05:
+                self._set_avatar(self._avatar + step)
+        elif self._following:  # stopped helping: go back to the corner (unless pointing somewhere)
+            self._vel = QPointF()
+            if self._target is None and self._flight is None and self._drag is None:
+                self._fly_to(self._home)
+        if following != self._following:
+            self._chai.set_click_through(following)  # a riding Chai must never catch the user's clicks
+        self._following = following
 
     def _on_mode(self, mode: str) -> None:
         self._mode = mode
@@ -622,13 +676,14 @@ class Overlay(QWidget):
         d = cur - self._cursor
         speed = math.hypot(d.x(), d.y()) / max(dt, 1e-3)
         self._cursor = cur
+        self._step_follow()
         hover = self._on_chai(cur) and not self._invisible  # catch clicks only while the mouse is on Chai
         if self._drag is None and hover != self._hover:
             self._chai.setCursor(Qt.CursorShape.OpenHandCursor if hover else Qt.CursorShape.ArrowCursor)
         self._hover = hover
         stroking = hover and speed > 40 and self._drag is None
         self._pet += ((1.0 if stroking else 0.0) - self._pet) * (0.18 if stroking else 0.06) * dt / 0.033
-        self._timer.setInterval(FAST_MS if self._flight else IDLE_MS)
+        self._timer.setInterval(FAST_MS if self._flight or self._following else IDLE_MS)
         self._repaint_changed(self._avatar != before)
         self._chai.update()
 
@@ -1090,6 +1145,8 @@ class Overlay(QWidget):
                 continue
             if self._target is not None and r.adjusted(-30, -30, 30, 30).contains(self._target):
                 continue
+            if self._following and r.adjusted(-24, -24, 24, 24).contains(self._cursor):
+                continue  # don't cover what the user is looking at
             if board is not None and r.intersects(board):
                 continue
             return r

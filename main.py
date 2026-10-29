@@ -17,7 +17,7 @@ if sys.stdout is None:  # started with pythonw: no console, so keep prints and e
     sys.stdout = sys.stderr = open(config.LOG_DIR / "zavero.log", "a", encoding="utf-8", buffering=1)
 
 from PyQt6.QtCore import QLockFile, QTimer  # noqa: E402
-from PyQt6.QtGui import QAction  # noqa: E402
+from PyQt6.QtGui import QAction, QActionGroup  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon  # noqa: E402
 
 import threading  # noqa: E402
@@ -54,6 +54,15 @@ def main() -> None:
     tray = QSystemTrayIcon(avatar_icon(), app)
     tray.setToolTip("Zavero - hold Right Ctrl and speak")
     menu = QMenu()
+    overlay.follow_mode = briefing.load_state().get("chai_follow", "auto")
+    follow_menu = menu.addMenu("Chai position")
+    follow_group = QActionGroup(follow_menu)
+    for mode, label in (("auto", "Follow my mouse while helping"), ("always", "Always follow my mouse"),
+                        ("corner", "Stay in the corner")):
+        act = QAction(label, follow_menu, checkable=True, checked=overlay.follow_mode == mode)
+        act.triggered.connect(lambda _, m=mode: (setattr(overlay, "follow_mode", m), briefing.save_state(chai_follow=m)))
+        follow_group.addAction(act)
+        follow_menu.addAction(act)
     stop_action = QAction("Stop current task", menu)
     stop_action.triggered.connect(orch.stop)
     quit_action = QAction("Quit Zavero", menu)
