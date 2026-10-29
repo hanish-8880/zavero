@@ -6,9 +6,13 @@ MODEL_FLAG = "approval needed"
 # A clicked label that starts or ends with one of these is a final action ("Pay Now", "Proceed to Pay").
 # Navigation like "Quick Pay" or "Bill Payment" menus only open a page, so they don't count.
 FINAL_START = ["pay", "make payment", "submit", "confirm", "send", "delete", "remove", "buy", "place order",
-               "checkout", "transfer", "purchase", "install", "uninstall", "log out", "logout", "sign out"]
+               "checkout", "transfer", "purchase", "install", "uninstall", "log out", "logout", "sign out",
+               # publishing to other people (LinkedIn "Post", X "Tweet", "Reply all", "Go live"...)
+               "post", "publish", "share", "tweet", "reply all", "upload", "go live", "schedule",
+               "pettu", "post chey", "post karo", "daalo"]
+# "Start a post" only opens the editor, so a plain "post" ending is not in this list.
 FINAL_END = ["to pay", "to payment", "and pay", "pay now", "submit", "confirm", "send", "delete", "place order",
-             "buy now", "checkout"]
+             "buy now", "checkout", "publish", "post now", "share now", "tweet", "upload"]
 _VERB = r"(?:click|clicking|press|pressing|tap|tapping|select|selecting|choose|choosing|hit|hitting)"
 _STOP = r"(?=\s+(?:to|so|for|and|which|that|then|in|on|at)\b|[,.;:!?(]|$)"
 # Meta's API attaches this to every computer action. In do mode, the user's "do it" covers it

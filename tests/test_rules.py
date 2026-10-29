@@ -68,6 +68,14 @@ def test_not_risky_while_paying_a_bill():
     assert risky_reason('I\'ll type the service number in "Service Number" for payment.', []) is None
 
 
+def test_posting_needs_approval():
+    for note in ['I will click "Post" to publish it.', "I'll click the Publish button", 'I will click "Tweet"',
+                 'I will click "Reply all"', 'I will click "Upload"', 'I will click "Share now"', 'I will click "Go live"']:
+        assert risky_reason(note, []) is not None, note
+    assert risky_reason('I will click "Start a post" to open the editor.', []) is None
+    assert risky_reason('I will click the "Posts" tab.', []) is None
+
+
 def test_secrets():
     typed = [{"type": "type", "text": "1234 5678 9012"}]
     assert secret_reason("Typing the number", typed) is not None
