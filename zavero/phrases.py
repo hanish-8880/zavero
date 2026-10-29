@@ -106,6 +106,22 @@ def phrase(key: str, user_text: str = "") -> str:
     return PHRASES[key][lang(user_text)]
 
 
+GREETINGS = {  # morning (5-12), afternoon (12-17), evening
+    "en": ("Good morning", "Good afternoon", "Good evening"),
+    "te": ("శుభోదయం", "నమస్కారం", "శుభ సాయంత్రం"),
+    "hi": ("सुप्रभात", "नमस्ते", "शुभ संध्या"),
+}
+
+
+def greeting(name: str, user_text: str = "", hour: int | None = None) -> str:
+    """'Good evening, **Hanish** 👋' in the user's language."""
+    import datetime
+
+    h = datetime.datetime.now().hour if hour is None else hour
+    part = 0 if 5 <= h < 12 else 1 if 12 <= h < 17 else 2
+    return f"{GREETINGS[lang(user_text)][part]}, **{name}** 👋"
+
+
 POINT_LABELS = {
     "en": ["right here!", "this one!", "click this!"],
     "te": ["ఇక్కడే!", "ఇది!", "ఇది నొక్కండి!"],

@@ -86,6 +86,9 @@ def main() -> None:
     feedback_action = QAction("Send feedback (say the problem)", menu)
     feedback_action.triggered.connect(orch.ask_feedback)
     menu.addAction(feedback_action)
+    replay_action = QAction("Replay onboarding", menu)
+    replay_action.triggered.connect(orch.onboard)
+    menu.addAction(replay_action)
     stop_action = QAction("Stop current task", menu)
     stop_action.triggered.connect(orch.stop)
     quit_action = QAction("Quit Zavero", menu)
@@ -149,9 +152,17 @@ def main() -> None:
     if watcher.start():  # does nothing until scripts/gmail_login.py has been run
         orch.gmail = watcher.gmail
 
-    overlay.show_text.emit(phrase("welcome", {"te": "తెలుగు", "hi": "हिंदी"}.get(orch.lang, "")), "info")
+    first_run = not state.get("onboarded") and not args.task
+    if first_run:
+        QTimer.singleShot(1200, orch.onboard)
+    else:
+        said = {"te": "తెలుగు", "hi": "हिंदी"}.get(orch.lang, "")
+        hello = phrase("welcome", said)
+        if state.get("name"):  # "Good evening, Hanish 👋" in their language
+            hello = phrases.greeting(state["name"], said) + "\n" + hello.split("\n", 1)[-1]
+        overlay.show_text.emit(hello, "info")
     QTimer.singleShot(4000, check_reminders)  # after the welcome, show any missed ones
-    if briefing.due_this_morning() and not args.task:  # first start of the day: "what matters today"
+    if briefing.due_this_morning() and not args.task and not first_run:  # "what matters today"
         QTimer.singleShot(9000, lambda: threading.Thread(target=orch.brief, daemon=True).start())
     if args.task:
         QTimer.singleShot(800, lambda: orch.start(args.task, "do" if args.do else "guide"))

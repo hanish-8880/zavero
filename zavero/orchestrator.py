@@ -1,12 +1,13 @@
 """Ties voice -> brain -> overlay -> driver together and holds session state."""
 import datetime
+import queue
 import re
 import threading
 import time
 
 from pynput import keyboard, mouse
 
-from zavero import actionlog, briefing, config, driver, narrator, reminders, safety, talk, writer
+from zavero import actionlog, briefing, config, driver, narrator, onboarding, reminders, safety, talk, writer
 from zavero.phrases import friendly_error, lang, phrase, point_label
 from zavero.brain import Brain, Step
 
@@ -117,6 +118,9 @@ class Orchestrator:
         """Called with each final transcript from voice.py."""
         intent = classify(text)
         actionlog.log("heard", text=text, intent=intent)
+        if self._onboard_q is not None:  # first-run hello: everything the user says goes to it
+            self._onboard_q.put(text)
+            return
         if not self._asking:
             self.ui.hide_board.emit()  # a new request closes the enlarged diagram
         if len(_norm(text).split()) > 2 and lang(text) != self.lang:
@@ -173,6 +177,23 @@ class Orchestrator:
         self.start(text, "do" if intent == "do" or self._answers_do_question() else "guide")
 
     _feedback_next = False
+    _onboard_q: queue.Queue | None = None
+
+    def onboard(self) -> None:
+        """Run the first-run hello (also tray -> Replay onboarding)."""
+        if self._onboard_q is not None or self.busy:
+            return
+        self._onboard_q = queue.Queue()
+
+        def work() -> None:
+            try:
+                onboarding.run(self, self._onboard_q)
+            except Exception as e:  # noqa: BLE001
+                actionlog.log("onboarding_error", error=str(e))
+            finally:
+                self._onboard_q = None
+
+        threading.Thread(target=work, daemon=True).start()
 
     def ask_feedback(self) -> None:
         """Tray "Send feedback": the next thing the user says is saved as a bug report."""
