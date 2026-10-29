@@ -87,6 +87,40 @@ def crop_png(shot: Shot, x: float, y: float, w: float, h: float) -> bytes:
     return buf.getvalue()
 
 
+EDITORS = ("Visual Studio Code", "- Cursor")  # window titles where Ctrl+P / Ctrl+G mean "open file / go to line"
+
+
+def active_window_title() -> str:
+    """Title of the window the user is working in (Windows only)."""
+    if sys.platform != "win32":
+        return ""
+    user32 = ctypes.windll.user32
+    hwnd = user32.GetForegroundWindow()
+    buf = ctypes.create_unicode_buffer(512)
+    user32.GetWindowTextW(hwnd, buf, 512)
+    return buf.value
+
+
+def open_in_editor(file: str, line: int) -> bool:
+    """In VS Code (or Cursor): open `file` and jump to `line`. Navigation only, never edits.
+    Returns False (and presses nothing) if the active window is not such an editor."""
+    import pyautogui
+
+    if not any(e in active_window_title() for e in EDITORS):
+        return False
+    pyautogui.hotkey("ctrl", "p")  # Quick Open
+    time.sleep(0.4)
+    pyautogui.typewrite(file, interval=0.01)
+    time.sleep(0.7)
+    pyautogui.press("enter")
+    time.sleep(0.7)
+    pyautogui.hotkey("ctrl", "g")  # Go to Line
+    time.sleep(0.3)
+    pyautogui.typewrite(str(line), interval=0.01)
+    pyautogui.press("enter")
+    return True
+
+
 # pyautogui key names differ from the model's (xdotool-style) names.
 _KEY_MAP = {
     "ctrl": "ctrl", "control": "ctrl", "alt": "alt", "shift": "shift",

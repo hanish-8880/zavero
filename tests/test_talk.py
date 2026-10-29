@@ -1,5 +1,21 @@
 from zavero.driver import Shot
-from zavero.talk import clean_drawing, is_diagram, is_question
+from zavero.talk import _goto, clean_drawing, is_diagram, is_error, is_question
+
+
+def test_error_questions():
+    for t in ["what is this error?", "ee error enti?", "why is my code failing", "fix this error",
+              "I got a traceback", "my program is not working", "ये एरर क्या है"]:
+        assert is_error(t) and is_question(t), t
+    assert not is_error("open notepad")
+    assert not is_error("create an error page")
+
+
+def test_goto_is_sanitised():
+    assert _goto({"file": "src/app/main.py", "line": 12}) == {"file": "main.py", "line": 12}
+    assert _goto({"file": "C:\\proj\\utils.js", "line": 3}) == {"file": "utils.js", "line": 3}
+    assert _goto({"file": "main.py", "line": 0}) is None
+    assert _goto({"file": "a b; rm -rf", "line": 4}) is None  # only plain file names are typed
+    assert _goto(None) is None
 
 
 def test_diagram_requests():

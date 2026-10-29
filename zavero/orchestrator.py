@@ -197,7 +197,8 @@ class Orchestrator:
     def _talk(self, text: str) -> None:
         """Quick answer about the screen, pointing at the thing it explains."""
         draw = talk.is_diagram(text)
-        self.ui.set_mode.emit("Diagram" if draw else "Explain")
+        error = not draw and talk.is_error(text)
+        self.ui.set_mode.emit("Diagram" if draw else "Error" if error else "Explain")
         mouse_at = tuple(int(v) for v in mouse.Controller().position)
         try:
             self.ui.hide_for_capture()
@@ -205,7 +206,7 @@ class Orchestrator:
                 shot = driver.screenshot(keep_full=draw)  # full resolution kept for a sharp enlarged copy
             finally:
                 self.ui.show_after_capture()
-            res = self._think(lambda: talk.answer(self._with_context(text), shot, mouse_at, lang(text), draw))
+            res = self._think(lambda: talk.answer(self._with_context(text), shot, mouse_at, lang(text), draw, error))
         except Exception as e:  # noqa: BLE001
             actionlog.log("talk_error", text=text, error=str(e))
             self._say(f"Sorry, I couldn't look at your screen:\n{e}", "error")
@@ -222,6 +223,29 @@ class Orchestrator:
         self._remember("zavero", reply)
         actionlog.log("talk", question=text, answer=reply, point=res["point"], region=res["region"])
         self._say(reply, "info")
+        if res.get("goto"):
+            self._open_line(res["goto"], reply, lang(text))
+
+    def _open_line(self, goto: dict, error: str, user_lang: str) -> None:
+        """Jump to the broken line in VS Code, point at it and say exactly what to change."""
+        file, line = goto["file"], goto["line"]
+        time.sleep(2.5)  # let the user read the first explanation
+        if not driver.open_in_editor(file, line):
+            self._say(f"{error}\n\n👉 Open **{file}** and go to line **{line}** (Ctrl+G).", "info")
+            return
+        actionlog.log("goto_line", file=file, line=line)
+        self._say(f"➡️ **{file}** · line **{line}**", "info")
+        time.sleep(1.0)  # let the editor scroll there
+        try:
+            shot = self._screenshot()
+            res = self._think(lambda: talk.explain_line(shot, file, line, error, user_lang))
+        except Exception as e:  # noqa: BLE001 - the first explanation is already on screen
+            actionlog.log("talk_error", text=f"line {line}", error=str(e))
+            return
+        if res.get("point"):
+            self.ui.point_at.emit(*driver.to_screen(res["point"]["x"], res["point"]["y"], shot))
+        self._remember("zavero", res.get("answer", ""))
+        self._say(f"**{file} · line {line}**\n{res.get('answer', '')}", "info")
 
     # --- "what matters today?" -------------------------------------------
     def brief(self) -> None:

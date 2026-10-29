@@ -21,6 +21,9 @@ QUESTION = [
     r"\benti\b", r"\bentidi\b", r"\bem(i|iti) idi\b", r"ఏంటి", r"ఏమిటి", r"ఎందుకు", r"అర్థం",
     r"\bkya hai\b", r"\bkya hota\b", r"\bkyu(n|on)?\b", r"\bmatlab\b", r"क्या है", r"क्यों", r"मतलब",
 ]
+# Code / app errors: explain them and, in VS Code, jump to the broken line.
+ERROR = [r"\berror", r"\beror", r"\btraceback", r"\bexception", r"\bbug\b", r"\bcrash", r"\bfail(ed|ing|s)?\b",
+         r"not working", r"\bwrong\b", r"\bpani cheyyatledu", r"\bkaam nahi", r"ఎర్రర్", r"एरर", r"गलती"]
 # A picture on screen the user wants explained: Zavero enlarges it and draws numbered marks on it.
 DIAGRAM = [r"diagram", r"\bchart", r"\bgraph", r"\bfigure", r"flow ?chart", r"\bpicture", r"\bimage\b",
            r"\bdrawing", r"\bmap\b", r"\bequation", r"\bformula", r"\bslide\b", r"\bboard\b",
@@ -41,6 +44,28 @@ SYSTEM = (
     "or a risky download, say so clearly. Keep on-screen labels in English in **bold**.\n"
     "- point: screenshot pixel centre of the thing you are talking about, or null.\n"
     "- Language of answer: {lang}."
+)
+SYSTEM_ERROR = (
+    "You are Zavero, a patient coding teacher for a beginner in India. The user has an error on their screen "
+    "(terminal traceback, red underline, Problems panel, browser console, or an app's error box). Read it "
+    "carefully. Reply with ONLY one JSON object:\n"
+    '{"answer": str, "point": {"x": int, "y": int} | null, "goto": {"file": str, "line": int} | null}\n'
+    "- answer: max 4 short, simple sentences: what the error means in plain words, the likely cause, and the "
+    "exact fix (put small code in `backticks`). Explain any technical word.\n"
+    "- goto: ONLY if the error names a file and line from the user's own project and a code editor like "
+    "VS Code is open: file = just the file name as written (e.g. 'main.py'), line = the line number. "
+    "For library files deep inside site-packages / node_modules, use the user's own file further up the "
+    "traceback. Else null.\n"
+    "- point: screenshot pixel centre of the error message on screen, or null.\n"
+    "- Language of answer: {lang}. Keep code, file names and error names in English."
+)
+SYSTEM_LINE = (
+    "You are Zavero, a patient coding teacher. The editor now shows {file} at line {line}, where this error "
+    "happens: {error}\nReply with ONLY one JSON object: "
+    '{"answer": str, "point": {"x": int, "y": int} | null}\n'
+    "- point: screenshot pixel centre of line {line}'s code in the editor (the highlighted line).\n"
+    "- answer: max 3 short, simple sentences: what is wrong on THIS line and exactly how to change it "
+    "(show the fixed code in `backticks`). Language: {lang}. Keep code in English."
 )
 LANG_NAME = {"te": "Telugu (Telugu script)", "hi": "Hindi (Devanagari)", "en": "simple English"}
 
@@ -82,9 +107,15 @@ def is_diagram(text: str) -> bool:
     return _has(DIAGRAM, t) and _has(EXPLAIN, t) and not re.search(r"\b(open|create|make|banana|chey)", t)
 
 
+def is_error(text: str) -> bool:
+    """'ee error enti?', 'why is my code failing', 'fix this error' -> explain + jump to the line."""
+    t = (text or "").lower()
+    return _has(ERROR, t) and not re.search(r"\b(open|create|make|banana)\b", t)
+
+
 def is_question(text: str) -> bool:
     t = (text or "").lower()
-    return is_diagram(t) or (_has(QUESTION, t) and not _has(TASK, t))
+    return is_diagram(t) or is_error(t) or (_has(QUESTION, t) and not _has(TASK, t))
 
 
 def mark_pointer(shot: Shot, mouse_x: int, mouse_y: int) -> str:
@@ -188,10 +219,35 @@ def refine_steps(img: Image.Image, data: dict) -> dict:
     return data
 
 
-def answer(question: str, shot: Shot, mouse: tuple[int, int], user_lang: str = "en", draw: bool = False) -> dict:
-    """Ask Muse Spark. Returns {"answer", "point" (screenshot px or None)}; with draw=True also
-    {"region": box in screenshot px or None, "steps": [{shape, color, label, detail, pts, fr}]}."""
-    system = SYSTEM_DRAW if draw else SYSTEM
+def _goto(g) -> dict | None:
+    """A safe {"file", "line"} to open in the editor, or None."""
+    if not isinstance(g, dict) or not isinstance(g.get("line"), int) or g["line"] < 1:
+        return None
+    name = str(g.get("file") or "").replace("\\", "/").split("/")[-1].strip()
+    return {"file": name, "line": g["line"]} if re.fullmatch(r"[\w.\-]{1,80}", name) else None
+
+
+def explain_line(shot: Shot, file: str, line: int, error: str, user_lang: str = "en") -> dict:
+    """After jumping to the line: point at it and say exactly what to change."""
+    system = (SYSTEM_LINE.replace("{file}", file).replace("{line}", str(line)).replace("{error}", error)
+              .replace("{lang}", LANG_NAME.get(user_lang, LANG_NAME["en"])))
+    resp = config.client().responses.create(
+        model=config.MODEL_SPARK, reasoning=config.REASONING, instructions=system,
+        input=[{"role": "user", "content": [
+            {"type": "input_text", "text": f"Explain line {line} of {file}."},
+            {"type": "input_image", "image_url": shot.data_url},
+        ]}],
+    )
+    data = extract_json(resp.output_text)
+    data["point"] = data.get("point") if _inside(data.get("point"), shot) else None
+    return data
+
+
+def answer(question: str, shot: Shot, mouse: tuple[int, int], user_lang: str = "en", draw: bool = False,
+           error: bool = False) -> dict:
+    """Ask Muse Spark. Returns {"answer", "point" (screenshot px or None), "goto" (error mode: file + line
+    to open, or None)}; with draw=True also {"region": box in screenshot px or None, "steps": [...]}."""
+    system = SYSTEM_DRAW if draw else SYSTEM_ERROR if error else SYSTEM
     resp = config.client().responses.create(
         model=config.MODEL_SPARK, reasoning=config.REASONING,
         instructions=system.replace("{lang}", LANG_NAME.get(user_lang, LANG_NAME["en"])),
@@ -203,9 +259,10 @@ def answer(question: str, shot: Shot, mouse: tuple[int, int], user_lang: str = "
     try:
         data = extract_json(resp.output_text)
     except ValueError:  # plain text answer: still useful
-        return {"answer": (resp.output_text or "").strip(), "point": None, "region": None, "steps": []}
+        return {"answer": (resp.output_text or "").strip(), "point": None, "goto": None, "region": None, "steps": []}
     pt = data.get("point")
     data["point"] = pt if _inside(pt, shot) else None  # models sometimes point off-screen
+    data["goto"] = _goto(data.get("goto")) if error else None
     if not draw:
         return {**data, "region": None, "steps": []}
     data = clean_drawing(data, shot)
