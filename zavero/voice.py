@@ -10,6 +10,7 @@ import threading
 import time
 from typing import Callable
 
+import numpy as np
 import sounddevice as sd
 from pynput import keyboard
 
@@ -17,6 +18,14 @@ from zavero import config
 
 BLOCK = config.SAMPLE_RATE // 10  # 100 ms of audio per frame
 _END = None  # sentinel: user released the hotkey
+
+
+def mic_level(block) -> float:
+    """Loudness of an int16 audio block as 0..1 (RMS x 10.2 like Clicky, so normal speech fills the bars)."""
+    if len(block) == 0:
+        return 0.0
+    rms = float(np.sqrt(np.mean((np.asarray(block, dtype=np.float32) / 32768.0) ** 2)))
+    return min(1.0, rms * 10.2)
 
 
 class PushToTalk:
@@ -28,8 +37,10 @@ class PushToTalk:
         on_partial: Callable[[str], None] | None = None,
         on_error: Callable[[str], None] | None = None,
         on_status: Callable[[str], None] | None = None,
+        on_level: Callable[[float], None] | None = None,
     ):
         self.on_final = on_final
+        self.on_level = on_level or (lambda v: None)  # mic loudness 0..1 per audio block (live mic wave)
         self.on_partial = on_partial or (lambda t: None)
         self.on_error = on_error or (lambda m: print("[voice error]", m))
         self.on_status = on_status or (lambda m: None)
@@ -81,6 +92,7 @@ class PushToTalk:
         def on_audio(data, frames, t, status) -> None:
             self._peak = max(self._peak, int(abs(data).max()))
             audio.put(bytes(data))
+            self.on_level(mic_level(data))
 
         # Start the mic right away so the first words aren't lost while the socket connects.
         try:

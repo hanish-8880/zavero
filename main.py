@@ -90,6 +90,7 @@ def main() -> None:
         on_partial=lambda t: overlay.show_text.emit(t, "listen"),
         on_error=lambda m: (print("[voice error]", m), overlay.show_text.emit(m, "error")),
         on_status=on_status,
+        on_level=overlay.set_level.emit,
     )
     ptt.start()
 

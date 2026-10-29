@@ -317,6 +317,7 @@ class Overlay(QWidget):
     tap_at = pyqtSignal(int, int)      # real screen px
     go_home = pyqtSignal()             # avatar back to its corner, no target
     set_listening = pyqtSignal(bool)
+    set_level = pyqtSignal(float)      # mic loudness 0..1 while listening (voice.mic_level)
     set_mode = pyqtSignal(str)         # "Guide" / "Doing" / ...
     set_thinking = pyqtSignal(bool)    # thinking dots while waiting for the model
     hide_text = pyqtSignal()
@@ -347,6 +348,7 @@ class Overlay(QWidget):
         self._mood = "info"
         self._mode = "Guide"
         self._listening = False
+        self._level = 0.0        # smoothed mic level: jumps up, decays x0.72 per 70 ms (Clicky's feel)
         self._taps: list[tuple[QPointF, float]] = []
         self._t = 0.0
         self._look = QPointF(0, 0)
@@ -375,6 +377,7 @@ class Overlay(QWidget):
         self.tap_at.connect(self._on_tap)
         self.go_home.connect(self._on_home)
         self.set_listening.connect(self._on_listening)
+        self.set_level.connect(lambda v: setattr(self, "_level", max(v, self._level)))
         self.set_mode.connect(self._on_mode)
         self.set_thinking.connect(self._on_thinking)
         self.hide_text.connect(lambda: self._on_text("", self._mood))
@@ -532,6 +535,7 @@ class Overlay(QWidget):
     def _tick(self) -> None:
         self._t += 0.033
         self._taps = [(p, b) for p, b in self._taps if self._t - b < 0.7]
+        self._level *= 0.72 ** (0.033 / 0.07)
         # follow the mouse; catch clicks only while it is over Chai
         cur = QPointF(self.mapFromGlobal(QCursor.pos()))
         d = cur - self._cursor
@@ -649,6 +653,13 @@ class Overlay(QWidget):
         happy = (self._mood == "done" and bool(self._text)) or self._pet > 0.45 or spin < 0.95
         paint_chai(p, c, R, self._t, self._look, listening=self._listening, happy=happy,
                    eye_open=1 - closed, steam=not self._thinking, rot=rot, spin=spin)
+        if self._listening:  # live mic wave: five bars under Chai, so a dead mic shows right away
+            for k, shape in enumerate((0.4, 0.7, 1.0, 0.7, 0.4)):
+                wobble = 0.12 * (1 + math.sin(self._t * 7 + k * 1.3))
+                bar = 3 + 15 * min(1.0, self._level * shape + wobble * shape)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(mood)
+                p.drawRoundedRect(QRectF(a.x() - 18 + k * 8 - 2, a.y() + R + 20 - bar / 2, 4, bar), 2, 2)
         if self._thinking:  # three bouncing dots above the head
             for k in range(3):
                 dy = -abs(math.sin(self._t * 6 + k * 0.7)) * 5
