@@ -50,6 +50,7 @@ def main() -> None:
     overlay.show()
     threading.Thread(target=config.warm_up, daemon=True).start()
     orch = Orchestrator(overlay)
+    overlay.button_clicked.connect(orch.on_button)
 
     tray = QSystemTrayIcon(avatar_icon(), app)
     tray.setToolTip("Zavero - hold Right Ctrl and speak")

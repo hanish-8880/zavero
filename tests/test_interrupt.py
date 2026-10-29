@@ -43,7 +43,7 @@ def test_new_press_drops_the_old_answer(monkeypatch):
 
     monkeypatch.setattr(talk, "answer", slow_answer)
     o._talk("what is this?")
-    shown = [args[0] for name, args in o.ui.log if name == "show_text"]
+    shown = [args[0] for name, args in o.ui.log if name in ("show_text", "show_buttons")]
     assert "old answer" not in shown
     assert ("go_home", ()) in o.ui.log
 
@@ -55,7 +55,7 @@ def test_answer_shows_without_interrupt(monkeypatch):
     monkeypatch.setattr(talk, "answer", lambda *a, **k: {"answer": "fresh", "point": None, "goto": None,
                                                          "region": None, "steps": []})
     o._talk("what is this?")
-    assert ("show_text", ("fresh", "info")) in o.ui.log
+    assert ("show_buttons", ("fresh", "info", ["copy"])) in o.ui.log
 
 
 def test_uses_the_key_press_screenshot(monkeypatch):

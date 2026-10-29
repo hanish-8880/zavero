@@ -156,10 +156,7 @@ class Orchestrator:
             return
         if self.busy:
             if intent == "do":  # "do it" / "you do for me ..." mid-task: same task, Zavero takes over
-                self._remember("user", text)
-                self.mode = "do"
-                self.ui.set_mode.emit("Doing")
-                self._acted.set()
+                self._take_over(text)
                 return
             if intent == "next":
                 self._acted.set()
@@ -211,9 +208,11 @@ class Orchestrator:
                 and time.monotonic() - self._asked_at < 300)
 
     def _on_click(self, x, y, button, pressed) -> None:
-        if pressed and not self.ui.is_on_avatar(x, y) and not self._zavero_acting:
+        if not pressed or self.ui.is_on_avatar(x, y) or self.ui.is_on_bubble_button(x, y):
+            return  # dragging Chai or pressing a bubble button is not a guide step
+        if not self._zavero_acting:
             self.ui.dismiss.emit()  # overlay keeps "hold" bubbles (guide steps, questions)
-        if pressed and self._waiting and not self.ui.is_on_avatar(x, y):  # dragging Chai is not a step
+        if self._waiting:
             t = self._guide_target
             self._off_target = bool(t) and (x - t[0]) ** 2 + (y - t[1]) ** 2 > config.CLICK_RADIUS ** 2
             self._acted.set()
@@ -311,7 +310,7 @@ class Orchestrator:
         self._remember("user", text)
         self._remember("zavero", reply)
         actionlog.log("talk", question=text, answer=reply, point=res["point"], region=res["region"])
-        self._say(reply, "info")
+        self._say(reply, "info", ["copy"])
         if res.get("goto"):
             self._open_line(res["goto"], reply, lang(text), seq)
 
@@ -360,7 +359,7 @@ class Orchestrator:
         site = {"linkedin": "LinkedIn", "x": "X", "facebook": "Facebook"}[platform]
         draft = res["post"] if len(res["post"]) < 700 else res["post"][:700] + "…"
         actionlog.log("post_draft", platform=platform, post=res["post"], image=str(image or ""))
-        if not self.ask(f"{draft}\n\n{phrase('post_ask', text).format(site=site)}"):
+        if not self.ask(f"{draft}\n\n{phrase('post_ask', text).format(site=site)}", buttons=["yes", "no", "copy"]):
             self._say(phrase("post_cancel", text), "done")
             return
         driver.set_clipboard(res["post"])  # pasted, never typed: works for Telugu/Hindi too
@@ -509,7 +508,7 @@ class Orchestrator:
             self._point(target, step)
         text = self._think(lambda: narrator.narrate("guide", self.user_text, step.text, step.actions))
         self._check()
-        self._say(text, "hold")  # stays until the user does the step
+        self._say(text, "hold", ["do", "next"])  # stays until the user does the step
         actionlog.log("guide", note=step.text, bubble=text, target=target)
         self._guide_target = target
         self._off_target = False
@@ -539,7 +538,7 @@ class Orchestrator:
         ui = self.ui
         secret = safety.secret_reason(step.text, step.actions)
         if secret:
-            self._say(narrator.narrate("handoff", self.user_text, step.text, step.actions, secret), "hold")
+            self._say(narrator.narrate("handoff", self.user_text, step.text, step.actions, secret), "hold", ["next"])
             actionlog.log("handoff", reason=secret, note=step.text)
             self._acted.clear()
             self._waiting = True
@@ -577,10 +576,31 @@ class Orchestrator:
             time.sleep(0.15)
         return step.safety_checks
 
-    def _say(self, text: str, mood: str) -> None:
-        """Show bubble text and invalidate any older async narration still in flight."""
+    def _say(self, text: str, mood: str, buttons: list | None = None) -> None:
+        """Show bubble text (with optional buttons, see overlay.BUTTONS) and invalidate older async narration."""
         self._say_seq += 1
-        self.ui.show_text.emit(text, mood)
+        if buttons:
+            self.ui.show_buttons.emit(text, mood, buttons)
+        else:
+            self.ui.show_text.emit(text, mood)
+
+    def on_button(self, b: str) -> None:
+        """A bubble button was clicked: same as saying it."""
+        actionlog.log("button", id=b)
+        if self._asking and b in ("yes", "no", "close"):
+            self._answer = b == "yes"  # closing a question = no
+            self._answered.set()
+        elif b == "do" and self.busy:
+            self._take_over("(clicked: do it for me)")
+        elif b == "next" and self._waiting:
+            self._acted.set()
+
+    def _take_over(self, said: str) -> None:
+        """Same task, but now Zavero does the steps (do mode)."""
+        self._remember("user", said)
+        self.mode = "do"
+        self.ui.set_mode.emit("Doing")
+        self._acted.set()
 
     def _say_async(self, kind: str, step: Step) -> None:
         """Narrate in the background; drop the result if something newer was shown meanwhile."""
@@ -594,9 +614,9 @@ class Orchestrator:
 
         threading.Thread(target=work, daemon=True).start()
 
-    def ask(self, question: str, timeout: float = 120) -> bool:
-        """Ask a yes/no question in the bubble; the user answers by voice. No answer = no."""
-        self._say(question, "hold")  # stays until they answer
+    def ask(self, question: str, timeout: float = 120, buttons: list | None = None) -> bool:
+        """Ask a yes/no question in the bubble; the user answers by voice or the Yes/No buttons. No answer = no."""
+        self._say(question, "hold", buttons or ["yes", "no"])  # stays until they answer
         self._answer = None
         self._answered.clear()
         self._asking = True

@@ -22,9 +22,11 @@ import time
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QBrush, QColor, QCursor, QFont, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPen,
-    QPixmap, QRadialGradient, QRegion, QTextDocument, QTransform,
+    QFontMetricsF, QPixmap, QRadialGradient, QRegion, QTextDocument, QTransform,
 )
 from PyQt6.QtWidgets import QApplication, QWidget
+
+from zavero.phrases import lang
 
 R = 32  # avatar radius
 BUBBLE_W = 290
@@ -52,6 +54,18 @@ POP_S = 0.35                # bubble pop-in time
 TYPE_MAX = 300              # longer answers appear at once (long Telugu text shouldn't drag)
 
 
+# Bubble buttons: id -> label per language. Orchestrator gets the id via Overlay.button_clicked.
+BUTTONS = {
+    "close": {"en": "✕", "te": "✕", "hi": "✕"},
+    "yes": {"en": "Yes", "te": "అవును", "hi": "हाँ"},
+    "no": {"en": "No", "te": "వద్దు", "hi": "नहीं"},
+    "do": {"en": "Do it for me", "te": "నువ్వే చెయ్", "hi": "आप कर दो"},
+    "next": {"en": "Done", "te": "అయింది", "hi": "हो गया"},
+    "copy": {"en": "Copy", "te": "కాపీ", "hi": "कॉपी"},
+    "step": {"en": "Next →", "te": "తర్వాత →", "hi": "आगे →"},
+}
+MAIN_BUTTONS = ("yes", "do", "step")  # drawn filled when first in the row
+BTN_H = 28
 KEEP_MOODS = ("listen", "hold")  # bubbles that stay: live transcript, and ones waiting for the user
 FADE_S = 0.4
 HOVER_ALPHA, HOVER_S = 0.15, 0.15  # see-through while the mouse is over the bubble
@@ -375,8 +389,45 @@ class _ChaiWindow(QWidget):
         self.ov._drag_end()
 
 
+class _BubbleWindow(_ChaiWindow):
+    """Small top-level window for the chat bubble, so its buttons can be clicked. It takes clicks ONLY
+    while the mouse is on a button; everywhere else clicks pass through to the app underneath."""
+
+    PAD = QPointF(18, 16)  # room around the bubble for its shadow and the pop-in overshoot
+
+    def place(self, bubble: QRectF) -> None:
+        """Cover the bubble rect (overlay coordinates) plus a margin."""
+        g = self.ov.geometry()
+        r = bubble.adjusted(-self.PAD.x(), -self.PAD.y(), self.PAD.x(), self.PAD.y() + 10).toAlignedRect()
+        r.translate(g.x(), g.y())
+        if r != self.geometry():
+            self.setGeometry(r)
+
+    def paintEvent(self, event) -> None:
+        if self.ov._invisible or not self.ov._text:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.translate(-self.offset())
+        self.ov._paint_bubble(p)
+
+    def mousePressEvent(self, e) -> None:
+        if e.button() == Qt.MouseButton.LeftButton:
+            hit = self.ov._button_at(self._local(e))
+            if hit:
+                self.ov._on_button(hit)
+
+    def mouseMoveEvent(self, e) -> None:
+        pass
+
+    def mouseReleaseEvent(self, e) -> None:
+        pass
+
+
 class Overlay(QWidget):
-    show_text = pyqtSignal(str, str)   # text, mood
+    show_text = pyqtSignal(str, str)   # text, mood (default buttons: just ✕)
+    show_buttons = pyqtSignal(str, str, list)  # text, mood, button ids (see BUTTONS)
+    button_clicked = pyqtSignal(str)   # a bubble button was clicked: its id
     point_at = pyqtSignal(int, int)    # real screen px
     set_label = pyqtSignal(str)        # small chip next to the target ("Pay Bill", "ఇక్కడే!"); after point_at
     tap_at = pyqtSignal(int, int)      # real screen px
@@ -442,6 +493,12 @@ class Overlay(QWidget):
         self._fade = 1.0            # 1 -> 0 while the bubble fades out
         self._hover_alpha = 1.0     # drops to HOVER_ALPHA while the mouse is over the bubble
         self._bubble_anim = False
+        self._buttons: list[str] = []
+        self._btn_rects: list[tuple[str, QRectF]] = []   # where each button was drawn (overlay coords)
+        self._hover_btn: str | None = None
+        self._copied_at = -99.0
+        self._bubble_win = _BubbleWindow(self)
+        self._bubble_through = None
         self._target_last = QRectF()
         self._label, self._label_born, self._label_at = "", 0.0, [0.0]  # chip text, start, per-char times
         self.follow_mode = "auto"   # set from main.py (saved in data/state.json); see FOLLOW_MODES
@@ -461,6 +518,7 @@ class Overlay(QWidget):
         self._timer.start(IDLE_MS)
 
         self.show_text.connect(self._on_text)
+        self.show_buttons.connect(self._on_text)
         self.point_at.connect(self._on_point)
         self.set_label.connect(self._on_label)
         self.tap_at.connect(self._on_tap)
@@ -496,6 +554,7 @@ class Overlay(QWidget):
     def hideEvent(self, event) -> None:
         super().hideEvent(event)
         self._chai.hide()
+        self._bubble_win.hide()
 
     def _stay_on_top(self) -> None:
         """Other always-on-top windows can cover us; push back to the top without taking focus.
@@ -503,6 +562,8 @@ class Overlay(QWidget):
         # HWND_TOPMOST, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW
         flags = 0x0002 | 0x0001 | 0x0010 | 0x0040
         ctypes.windll.user32.SetWindowPos(self._hwnd, -1, 0, 0, 0, 0, flags)
+        if self._bubble_win.isVisible():
+            ctypes.windll.user32.SetWindowPos(int(self._bubble_win.winId()), -1, 0, 0, 0, 0, flags)
         ctypes.windll.user32.SetWindowPos(int(self._chai.winId()), -1, 0, 0, 0, 0, flags)
 
     def _sync_chai(self) -> None:
@@ -515,6 +576,7 @@ class Overlay(QWidget):
         self._invisible = on
         self.repaint()
         self._chai.repaint()
+        self._bubble_win.repaint()
 
     def hide_for_capture(self) -> None:
         """Call from a worker thread right before a model screenshot. Blocks until hidden."""
@@ -568,20 +630,65 @@ class Overlay(QWidget):
                        min(max(pt.y(), R + 40), self.height() - R - 12))
 
     # --- slots ----------------------------------------------------------
-    def _on_text(self, text: str, mood: str) -> None:
+    def _on_text(self, text: str, mood: str, buttons: list | None = None) -> None:
         old = self._text
         self._text, self._mood = text, mood
         if text and text != old:
             self._active_at = self._shown_at = self._t
             self._fade = 1.0
+        row = [b for b in (buttons or []) if b in BUTTONS and b != "close"]
+        if self._board and self._board[1] and "step" not in row:
+            row.append("step")  # diagram open: "Next →" walks through its steps
+        self._buttons = ([] if mood == "listen" else ["close"]) + row
         if text:
             _, w, h = self._bubble_doc(text)
+            if row:  # room for the buttons, and never narrower than them
+                w = max(w, min(BUBBLE_W + 60, self._row_width() + 28))
+                _, w, h = self._bubble_doc(text, w)
+                h += BTN_H + 10
             self._bubble_size = (w, h)
         # Pop in and type out real messages; live transcripts ("listen") just update in place.
         if text and mood != "listen" and text != old:
             self._text_born = self._t
         elif mood == "listen":
             self._text_born = -99.0
+        self.update()
+
+    def _button_at(self, pos: QPointF) -> str | None:
+        for b, box in self._btn_rects:
+            if box.adjusted(-3, -3, 3, 3).contains(pos):
+                return b
+        return None
+
+    def is_on_bubble_button(self, x: int, y: int) -> bool:
+        """True if real screen px (x, y) is on a bubble button (safe from any thread): not a guide click."""
+        return bool(self._text) and not self._invisible and self._button_at(self.local(x, y)) is not None
+
+    def _on_button(self, b: str) -> None:
+        """A bubble button was clicked (GUI thread). Local ones act here; all are passed on."""
+        if b == "close":
+            self._on_text("", self._mood)
+        elif b == "copy":
+            QApplication.clipboard().setText(re.sub(r"\*\*(.+?)\*\*", r"\1", self._text))
+            self._copied_at = self._t
+            self._bubble_win.update()
+        elif b == "step":
+            self._board_next()
+        self.button_clicked.emit(b)
+
+    def _board_next(self) -> None:
+        """Jump the diagram to its next step (everything drawn, caption on that step)."""
+        if not self._board:
+            return
+        img, steps, side, born = self._board
+        durs = [1.0 if s["shape"] == "text" else STEP_S for s in steps]
+        total, age = sum(durs), self._t - born
+        teach = [i for i in range(len(steps)) if steps[i]["shape"] != "text"] or list(range(len(steps)))
+        if age < total:  # still drawing: finish now, caption on the first step
+            nxt = 0
+        else:
+            nxt = (int((age - total) / STEP_S) + 1) % len(teach)
+        self._board = (img, steps, side, self._t - total - nxt * STEP_S - 0.01)
         self.update()
 
     def _on_dismiss(self) -> None:
@@ -596,7 +703,17 @@ class Overlay(QWidget):
             if self._fade == 0:
                 self._on_text("", self._mood)
                 self._fade = 1.0
-        over = bool(self._text) and self._bubble_last.contains(self._cursor)
+        btn = self._button_at(self._cursor) if self._text else None
+        if btn != self._hover_btn:
+            self._hover_btn = btn
+            self._bubble_win.setCursor(Qt.CursorShape.PointingHandCursor if btn else Qt.CursorShape.ArrowCursor)
+            self._bubble_win.update()
+        # The bubble window takes clicks only on a button; elsewhere they go to the app underneath.
+        through = btn is None or self._opacity == 0
+        if through != self._bubble_through:
+            self._bubble_through = through
+            self._bubble_win.set_click_through(through)
+        over = bool(self._text) and self._bubble_last.contains(self._cursor) and btn is None
         goal = HOVER_ALPHA if over else 1.0
         step = (1 - HOVER_ALPHA) * self._dt / HOVER_S
         self._hover_alpha = max(goal, self._hover_alpha - step) if over else min(goal, self._hover_alpha + step)
@@ -687,6 +804,7 @@ class Overlay(QWidget):
             self._opacity = op
             self.setWindowOpacity(op)
             self._chai.setWindowOpacity(op)
+            self._bubble_win.setWindowOpacity(op)
         # A riding or faded-out Chai must never catch the user's clicks.
         through = self._following or op == 0
         if through != self._through:
@@ -786,14 +904,27 @@ class Overlay(QWidget):
             add(QRectF(pos.x() - 45, pos.y() - 45, 90, 90))
         if self._board:
             add(getattr(self, "_board_rect", QRectF(self.rect())).adjusted(-20, -20, 20, 30))
-        if self._text:
-            age = self._t - self._text_born
-            typing = age < POP_S or (len(self._text) <= TYPE_MAX and age < len(self._text) * TYPE_S + 0.1)
-            if moved or typing or self._bubble_anim:
-                add(self._bubble_rect(*self._bubble_size).adjusted(-12, -12, 12, 16))
-                add(self._bubble_last)
         if not region.isEmpty():
             self.update(region)
+        self._sync_bubble(moved)
+
+    def _sync_bubble(self, moved: bool) -> None:
+        """The bubble lives in its own small window (so its buttons can be clicked): place and redraw it."""
+        win = self._bubble_win
+        if not self._text or self._invisible:
+            if win.isVisible() and not self._text:
+                win.hide()
+            return
+        rect = self._bubble_rect(*self._bubble_size)
+        win.place(rect)
+        if not win.isVisible() and self.isVisible():
+            win.show()
+            win.setWindowOpacity(self._opacity)
+            self._bubble_through = None  # re-apply click-through to the new native window state
+        age = self._t - self._text_born
+        typing = age < POP_S or (len(self._text) <= TYPE_MAX and age < len(self._text) * TYPE_S + 0.1)
+        if moved or typing or self._bubble_anim:
+            win.update()
 
     # --- painting -------------------------------------------------------
     def paintEvent(self, event) -> None:
@@ -813,8 +944,7 @@ class Overlay(QWidget):
             p.drawEllipse(pos, r, r)
         if self._board:
             self._paint_board(p)
-        if self._text:  # Chai itself is painted by its own window (_ChaiWindow)
-            self._paint_bubble(p)
+        # Chai and the bubble are painted by their own small windows (_ChaiWindow, _BubbleWindow).
 
     def _paint_target(self, p: QPainter) -> None:
         t = self._target
@@ -1012,11 +1142,62 @@ class Overlay(QWidget):
         head.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.8)
         p.setFont(head)
         p.setPen(QColor(71, 85, 105))
-        p.drawText(QRectF(rect.x() + pad + 12, rect.y() + 8, w - 2 * pad - 12, 16),
+        p.drawText(QRectF(rect.x() + pad + 12, rect.y() + 8, w - 2 * pad - 36, 16),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, f"ZAVERO · {self._mode.upper()}")
+        self._btn_rects = []
+        if "close" in self._buttons:  # ✕ in the header corner
+            box = QRectF(rect.right() - pad - 16, rect.y() + 7, 18, 18)
+            self._btn_rects.append(("close", box))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(15, 23, 42, 30 if self._hover_btn == "close" else 0))
+            p.drawEllipse(box)
+            p.setPen(QPen(QColor(71, 85, 105), 1.6, cap=Qt.PenCapStyle.RoundCap))
+            c, k = box.center(), 3.6
+            p.drawLine(c + QPointF(-k, -k), c + QPointF(k, k))
+            p.drawLine(c + QPointF(-k, k), c + QPointF(k, -k))
+        self._paint_buttons(p, rect, pad, mood)
         p.translate(rect.x() + pad, rect.y() + 28)
         doc.drawContents(p)
         p.restore()
+
+    def _row_buttons(self) -> list[str]:
+        return [b for b in self._buttons if b != "close"]
+
+    def _button_label(self, b: str) -> str:
+        if b == "copy" and self._t - self._copied_at < 1.2:
+            return "✓"
+        return BUTTONS[b][lang(self._text)]
+
+    def _row_width(self) -> float:
+        """Width the button row needs, so the bubble is never narrower than its buttons."""
+        fm = QFontMetricsF(ui_font(9, bold=True))
+        row = self._row_buttons()
+        return sum(fm.horizontalAdvance(self._button_label(b)) + 26 for b in row) + 6 * max(0, len(row) - 1)
+
+    def _paint_buttons(self, p: QPainter, rect: QRectF, pad: float, mood: QColor) -> None:
+        """Pill buttons along the bottom: the first one is filled (main action), the rest outlined."""
+        row = self._row_buttons()
+        if not row:
+            return
+        font = ui_font(9, bold=True)
+        p.setFont(font)
+        fm = QFontMetricsF(font)
+        x, y = rect.left() + pad, rect.bottom() - 10 - BTN_H
+        for i, b in enumerate(row):
+            label = self._button_label(b)
+            box = QRectF(x, y, fm.horizontalAdvance(label) + 26, BTN_H)
+            hover = self._hover_btn == b
+            main = i == 0 and b in MAIN_BUTTONS
+            p.setPen(Qt.PenStyle.NoPen if main else QPen(QColor(15, 23, 42, 45), 1))
+            fill = QColor(mood) if main else QColor(255, 255, 255, 235)
+            if hover:
+                fill = fill.lighter(112) if main else QColor(241, 245, 249, 255)
+            p.setBrush(fill)
+            p.drawRoundedRect(box, BTN_H / 2, BTN_H / 2)
+            p.setPen(QColor("#FFFFFF") if main else QColor(15, 23, 42))
+            p.drawText(box, Qt.AlignmentFlag.AlignCenter, label)
+            self._btn_rects.append((b, box))
+            x += box.width() + 6
 
     def _paint_board(self, p: QPainter) -> None:
         """Enlarged diagram in a glass panel. Coloured strokes (circle / path / arrow) draw themselves one
