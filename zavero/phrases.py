@@ -37,6 +37,26 @@ PHRASES = {
         "te": "ఇంకా ఏ రిమైండర్లు లేవు 🙂",
         "hi": "अभी कोई रिमाइंडर नहीं है 🙂",
     },
+    "api_down": {
+        "en": "I can't reach the internet right now 📶 Please check your connection and try again.",
+        "te": "ఇప్పుడు ఇంటర్నెట్ అందడం లేదు 📶 కనెక్షన్ చూసి మళ్ళీ ప్రయత్నించండి.",
+        "hi": "अभी इंटरनेट नहीं मिल रहा 📶 कनेक्शन देखकर फिर से कोशिश कीजिए।",
+    },
+    "no_credits": {
+        "en": "I'm out of AI credits for now 😅 Please ask the person who set me up to add more.",
+        "te": "నా AI క్రెడిట్లు అయిపోయాయి 😅 నన్ను సెటప్ చేసినవాళ్ళని ఇంకా జోడించమని అడగండి.",
+        "hi": "मेरे AI क्रेडिट खत्म हो गए 😅 जिन्होंने मुझे सेट किया, उनसे और जोड़ने को कहिए।",
+    },
+    "slow": {
+        "en": "That took too long ⏳ Please try again in a moment.",
+        "te": "చాలా సమయం పట్టింది ⏳ కొంచెం సేపటి తర్వాత మళ్ళీ ప్రయత్నించండి.",
+        "hi": "बहुत देर लग गई ⏳ थोड़ी देर बाद फिर से कोशिश कीजिए।",
+    },
+    "went_wrong": {
+        "en": "Sorry, something went wrong 🙏 Please try again.",
+        "te": "క్షమించండి, ఏదో తప్పు జరిగింది 🙏 మళ్ళీ ప్రయత్నించండి.",
+        "hi": "माफ़ कीजिए, कुछ गड़बड़ हो गई 🙏 फिर से कोशिश कीजिए।",
+    },
     "heard_nothing": {
         "en": "I couldn't hear you. Please speak a little louder 🙂",
         "te": "నాకు వినిపించలేదు. కొంచెం గట్టిగా మాట్లాడండి 🙂",
@@ -57,3 +77,18 @@ def lang(text: str) -> str:
 def phrase(key: str, user_text: str = "") -> str:
     """A phrase in the same language as the user's last words."""
     return PHRASES[key][lang(user_text)]
+
+
+def friendly_error(e: Exception, user_text: str = "") -> str:
+    """A calm message for the user instead of the raw error (the raw error goes to the action log)."""
+    name, msg = type(e).__name__, str(e).lower()
+    status = getattr(e, "status_code", None)
+    if status in (402, 429) or any(w in msg for w in ("quota", "credit", "insufficient", "billing")):
+        key = "no_credits"
+    elif "timeout" in name.lower() or "timed out" in msg:
+        key = "slow"
+    elif "connection" in name.lower() or "connect" in msg or "network" in msg:
+        key = "api_down"
+    else:
+        key = "went_wrong"
+    return phrase(key, user_text)

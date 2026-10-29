@@ -7,7 +7,7 @@ import time
 from pynput import keyboard, mouse
 
 from zavero import actionlog, briefing, config, driver, narrator, reminders, safety, talk
-from zavero.phrases import lang, phrase
+from zavero.phrases import friendly_error, lang, phrase
 from zavero.brain import Brain, Step
 
 # Short spoken commands. Matched as whole words/phrases after lowercasing.
@@ -209,7 +209,7 @@ class Orchestrator:
             res = self._think(lambda: talk.answer(self._with_context(text), shot, mouse_at, lang(text), draw, error))
         except Exception as e:  # noqa: BLE001
             actionlog.log("talk_error", text=text, error=str(e))
-            self._say(f"Sorry, I couldn't look at your screen:\n{e}", "error")
+            self._say(friendly_error(e, text), "error")
             return
         reply = res["answer"]
         if res.get("sketch"):  # a new drawing on a blank whiteboard (side -1 = whiteboard)
@@ -260,7 +260,7 @@ class Orchestrator:
             text = self._think(lambda: briefing.write(facts, self.lang))
         except Exception as e:  # noqa: BLE001
             actionlog.log("briefing_error", error=str(e))
-            self._say(f"Sorry, I couldn't make your briefing:\n{e}", "error")
+            self._say(friendly_error(e, self.user_text), "error")
             return
         briefing.save_state(last_brief=datetime.date.today().isoformat())
         actionlog.log("briefing", text=text)
@@ -333,7 +333,7 @@ class Orchestrator:
             actionlog.log("guide_ended", reason=str(e))
         except Exception as e:  # noqa: BLE001 - show every problem to the user
             ui.go_home.emit()
-            self._say(f"Sorry, something went wrong:\n{e}", "error")
+            self._say(friendly_error(e, said), "error")
             actionlog.log("error", error=str(e))
         finally:
             ui.set_thinking.emit(False)
