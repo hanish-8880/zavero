@@ -738,7 +738,8 @@ class Overlay(QWidget):
         head_font = ui_font(7.5, bold=True)
         head_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.8)
         p.setFont(head_font)
-        p.drawText(QRectF(x + pad + 4, 48 + 6, W - 2 * pad, 18), Qt.AlignmentFlag.AlignLeft, "ZAVERO · DIAGRAM")
+        p.drawText(QRectF(x + pad + 4, 48 + 6, W - 2 * pad, 18), Qt.AlignmentFlag.AlignLeft,
+                   "ZAVERO · WHITEBOARD" if side < 0 else "ZAVERO · DIAGRAM")
         p.setFont(ui_font(7.5))
         p.drawText(QRectF(x + pad, 48 + 6, W - 2 * pad - 4, 18), Qt.AlignmentFlag.AlignRight, "Esc to close")
 
@@ -755,14 +756,20 @@ class Overlay(QWidget):
 
         # Which step is being drawn now. After the last one, keep cycling the highlight so it can be re-read.
         n, age = len(steps), self._t - born
-        drawing = age < n * STEP_S
-        cur = min(n - 1, int(age / STEP_S)) if drawing else int((age - n * STEP_S) / STEP_S) % n
+        durs = [1.0 if s["shape"] == "text" else STEP_S for s in steps]  # writing a label is quick
+        starts = [sum(durs[:i]) for i in range(n)]
+        drawing = age < sum(durs)
+        if drawing:
+            cur = max(i for i in range(n) if starts[i] <= age)
+        else:
+            teach = [i for i in range(n) if steps[i]["shape"] != "text"] or list(range(n))
+            cur = teach[int((age - sum(durs)) / STEP_S) % len(teach)]
         for i, s in enumerate(steps):
-            t = age - i * STEP_S
+            t = age - starts[i]
             if drawing and t < 0:
                 break
-            prog = min(1.0, t / 1.3) if drawing else 1.0
-            self._paint_stroke(p, s, i, area, prog, highlight=(i == cur), faded=(i != cur))
+            prog = min(1.0, t / (0.6 if s["shape"] == "text" else 1.3)) if drawing else 1.0
+            self._paint_stroke(p, s, i, area, prog, highlight=(i == cur), faded=(i != cur), clean=side < 0)
 
         # caption: what the current stroke means
         s = steps[cur]
@@ -787,8 +794,9 @@ class Overlay(QWidget):
         p.restore()
 
     def _paint_stroke(self, p: QPainter, s: dict, i: int, area: QRectF, prog: float,
-                      highlight: bool, faded: bool) -> None:
-        """One teacher stroke: a circle that closes around a part, or a path/arrow that grows along a line."""
+                      highlight: bool, faded: bool, clean: bool = False) -> None:
+        """One teacher stroke: a circle that closes around a part, a path/arrow/line that grows, a polygon,
+        or handwritten text. clean=True (whiteboard): no number badges, the drawing itself stays tidy."""
         col = QColor(PENS[s["color"]])
         if faded:
             col.setAlphaF(0.6)
@@ -808,9 +816,24 @@ class Overlay(QWidget):
                 p.setPen(pen)
                 p.drawArc(rect, 90 * 16, span)
             badge = c + QPointF(-r * 0.72, -r * 0.72)
+        elif s["shape"] == "text":  # handwriting: the text appears letter by letter
+            word = s.get("text", "")[: max(1, math.ceil(len(s.get("text", "")) * prog))]
+            f = ui_font(17, bold=True)
+            p.setFont(f)
+            tw = p.fontMetrics().horizontalAdvance(s.get("text", "")) + 8
+            box = QRectF(pts[0].x() - tw / 2, pts[0].y() - 15, tw, 30)
+            p.setPen(QColor(255, 255, 255, 200))
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):  # white halo keeps it readable on lines
+                p.drawText(box.translated(dx, dy), Qt.AlignmentFlag.AlignCenter, word)
+            p.setPen(col)
+            p.drawText(box, Qt.AlignmentFlag.AlignCenter, word)
+            return  # text needs no number badge
         else:
             path = QPainterPath(pts[0])
-            if len(pts) == 2:
+            if s["shape"] == "polygon":  # straight sides, closed, e.g. a triangle
+                for q in pts[1:] + pts[:1]:
+                    path.lineTo(q)
+            elif len(pts) == 2:
                 path.lineTo(pts[1])
             else:  # smooth curve through the points (midpoint quadratic)
                 for a, b in zip(pts[1:-1], pts[2:]):
@@ -823,7 +846,7 @@ class Overlay(QWidget):
             for pen in (under, ink):
                 p.setPen(pen)
                 p.drawPath(part)
-            if prog > 0.05:  # arrowhead at the pen tip shows the direction of flow
+            if prog > 0.05 and s["shape"] in ("path", "arrow"):  # arrowhead at the pen tip: direction of flow
                 tip = path.pointAtPercent(prog)
                 ang = math.radians(-path.angleAtPercent(max(0.0, prog - 0.01)))
                 head = QPainterPath(tip)
@@ -835,7 +858,7 @@ class Overlay(QWidget):
                     p.drawPath(head)
             badge = pts[0]
 
-        if prog < 0.15:
+        if prog < 0.15 or clean:
             return
         if highlight:  # the step being explained pulses
             glow = QColor(PENS[s["color"]])

@@ -86,8 +86,8 @@ def snap(steps: list[dict], img: Image.Image) -> int:
     for s in steps:
         objs = found.get(s.get("look"), [])
         guess = [(fx * w, fy * h) for fx, fy in s["pts"]]
-        if not objs:
-            continue
+        if not objs or s["shape"] not in ("circle", "path", "arrow"):
+            continue  # lines, polygons and text are drawn where Spark put them
         o = _nearest(objs, guess)
         x1, y1, x2, y2 = o["box"]
         if s["shape"] == "circle":

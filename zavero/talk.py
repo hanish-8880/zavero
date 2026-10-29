@@ -28,6 +28,10 @@ ERROR = [r"\berror", r"\beror", r"\btraceback", r"\bexception", r"\bbug\b", r"\b
 DIAGRAM = [r"diagram", r"\bchart", r"\bgraph", r"\bfigure", r"flow ?chart", r"\bpicture", r"\bimage\b",
            r"\bdrawing", r"\bmap\b", r"\bequation", r"\bformula", r"\bslide\b", r"\bboard\b",
            r"డయాగ్రామ్", r"చిత్రం", r"బొమ్మ", r"आरेख", r"चित्र", r"डायग्राम", r"\bbomma\b", r"\bchitra"]
+# "Draw it for me": always the drawing board (never open Paint), on the diagram or on a blank whiteboard.
+DRAW_ASK = [r"\bdraw", r"\bsketch", r"\bgee(yi|yu|si|sthu|stha)", r"గీ(యి|సి|యండి|స్తా)", r"బొమ్మ (వేయి|వేసి|గీ)",
+            r"\bbomma (veyi|vesi|gee)", r"bana ?(ke|kar|o) ?(dikha|samjha|batao)", r"बना ?(के|कर) ?(दिखा|समझा)",
+            r"खींच", r"\bkheench"]
 EXPLAIN = [r"\bexplain", r"\bdraw\b", r"\bunderstand", r"\bdoubt", r"\bwhat\b", r"\bmean", r"\bshow\b",
            r"\benti\b", r"\bardam", r"\bartham", r"vivarinch", r"ఏంటి", r"అర్థం", r"వివరించ",
            r"\bkya\b", r"samjha", r"samajh", r"क्या", r"समझा", r"समझ"]
@@ -71,29 +75,37 @@ LANG_NAME = {"te": "Telugu (Telugu script)", "hi": "Hindi (Devanagari)", "en": "
 
 
 SYSTEM_DRAW = (
-    "You are Zavero, a patient teacher for a beginner in India. The user has a doubt about a diagram, chart, "
-    "slide or picture on their screen (often a paused YouTube video). Find it (the red circle is their mouse "
-    "pointer, usually on or near it). You will teach it step by step by drawing on an enlarged copy, like a "
-    "teacher with coloured pens. Reply with ONLY one JSON object:\n"
-    '{"answer": str, "region": {"x": int, "y": int, "w": int, "h": int}, "steps": [{"shape": "circle" | '
-    '"path" | "arrow", "color": "red" | "blue" | "green" | "orange" | "purple", "points": [[x, y], ...], '
-    '"look": str, "label": str, "detail": str}]}\n'
-    "- look: 1-3 plain English words for how the thing you draw on LOOKS in the picture (colour + shape), "
-    "e.g. 'blue tube', 'red tube', 'pink box', 'arrow', 'circle', 'yellow box'. Never a subject word.\n"
-    "- region: box around the whole diagram in screenshot pixels, with a little margin. Not the whole screen.\n"
-    "- steps: 2 to 6, in the order a teacher would explain. circle = ring around one part (points = [centre]). "
-    "path = trace along a line, vessel, pipe, wire or route (points = 2 to 8 points exactly along it, in the "
-    "direction things flow). arrow = show movement from one part to another (points = [from, to]). "
-    "For flow inside a tube, vessel, pipe or wire, use path (traced along it), not arrow. "
-    "All points in screenshot pixels.\n"
-    "- Use colours with meaning, like a textbook: heart and blood: blue = blood without oxygen, red = blood "
-    "with oxygen; circuits: red = +, blue = -. Name the colour in the detail, e.g. 'This blue vessel brings ...'.\n"
-    "- label: 1-4 words. detail: one short simple sentence on what it is and where it goes next.\n"
-    "- answer: one short sentence: what the whole diagram shows.\n"
-    "- If there is no diagram, return region null and steps [] and answer the question in 'answer'.\n"
-    "- Language of answer, label and detail: {lang}. Keep technical words as on screen, explained simply."
+    "You are Zavero, a patient teacher for a beginner in India. The user wants you to explain something by "
+    "drawing, step by step, like a teacher with coloured pens. Choose ONE mode:\n"
+    "A) annotate: a diagram, chart, slide or picture on their screen (often a paused YouTube video) is what "
+    "they ask about (the red circle is their mouse pointer, usually on or near it). Draw on an enlarged copy.\n"
+    "B) sketch: they want a NEW drawing ('draw me a triangle', 'draw another one', 'show me how it works'), or "
+    "nothing on screen fits. Draw from scratch on a blank whiteboard 1000 wide x 700 tall.\n"
+    "Reply with ONLY one JSON object:\n"
+    '{"answer": str, "mode": "annotate" | "sketch", "region": {"x": int, "y": int, "w": int, "h": int} | null, '
+    '"steps": [{"shape": "circle" | "path" | "arrow" | "line" | "polygon" | "rect" | "text", '
+    '"color": "red" | "blue" | "green" | "orange" | "purple", "points": [[x, y], ...], "r": int, '
+    '"text": str, "look": str, "label": str, "detail": str}]}\n'
+    "- annotate: region = box around the diagram in screenshot pixels (little margin, not the whole screen); "
+    "points in screenshot pixels. look = 1-3 plain English words for how the thing LOOKS (colour + shape), "
+    "e.g. 'blue tube', 'pink box', 'arrow'. Never a subject word.\n"
+    "- sketch: region null, look empty; points in whiteboard units (x 0-1000, y 0-700). Make clean, correct, "
+    "well-proportioned figures that fill the board with margin 60 (e.g. a right triangle with a, b, c labels "
+    "and a small square in the right-angle corner). Build the figure up stroke by stroke.\n"
+    "- shapes: circle = ring (points = [centre], r = radius). path = trace along a line / vessel / route in the "
+    "direction things flow (2-8 points, gets an arrowhead). arrow = movement from one part to another "
+    "([from, to]). line = plain line or curve, no arrowhead (2-8 points). polygon = closed shape through its "
+    "corners. rect = [top-left, bottom-right]. text = write `text` (a few characters like 'a', 'c = 5', "
+    "'90°') with its centre at points[0]. For flow inside a tube or wire use path, not arrow.\n"
+    "- steps: 2-6 for annotate, 3-8 for sketch, in teaching order.\n"
+    "- Use colours with meaning (blood: blue = without oxygen, red = with oxygen; circuits: red +, blue -; "
+    "maths: one colour per side or idea). Name the colour in the detail, e.g. 'This blue side a ...'.\n"
+    "- label: 1-4 words. detail: one short simple sentence: what this stroke shows and how it connects to the next.\n"
+    "- answer: one short sentence: what the whole drawing shows.\n"
+    "- Language of answer, label and detail: {lang}. Keep maths symbols and technical words as usual."
 )
-SHAPES = ("circle", "path", "arrow")
+SHAPES = ("circle", "path", "arrow", "line", "polygon", "rect", "text")
+BOARD_W, BOARD_H = 1000, 700  # whiteboard units for sketches
 COLORS = ("red", "blue", "green", "orange", "purple")
 
 
@@ -102,8 +114,12 @@ def _has(patterns: list[str], text: str) -> bool:
 
 
 def is_diagram(text: str) -> bool:
-    """'explain this diagram', 'ee diagram enti?', 'ye chart samjhao' -> enlarge + draw."""
+    """'explain this diagram', 'draw me a triangle', 'ye chart samjhao' -> the drawing board."""
     t = (text or "").lower()
+    if re.search(r"\b(paint|canva|photoshop)\b", t):  # they want that app, not Chai's board
+        return False
+    if _has(DRAW_ASK, t):
+        return True
     return _has(DIAGRAM, t) and _has(EXPLAIN, t) and not re.search(r"\b(open|create|make|banana|chey)", t)
 
 
@@ -145,32 +161,73 @@ def _pairs(points) -> list[tuple[float, float]]:
     return out
 
 
-def clean_drawing(data: dict, shot: Shot) -> dict:
-    """Keep a sensible region and valid steps; step points become 0..1 fractions of the region.
+def _step(s: dict, pts: list[tuple[float, float]], fr: float) -> dict | None:
+    """One drawing step with points as 0..1 fractions; None if it can't be drawn."""
+    shape = s.get("shape") if s.get("shape") in SHAPES else "circle"
+    if not pts:
+        return None
+    if shape == "text" and not str(s.get("text") or "").strip():
+        return None
+    if shape == "rect" and len(pts) >= 2:  # two corners -> four
+        (x1, y1), (x2, y2) = pts[0], pts[1]
+        shape, pts = "polygon", [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+    if shape in ("path", "arrow", "line", "polygon") and len(pts) < 2:
+        shape = "circle"
+    if shape in ("circle", "text"):
+        pts = pts[:1]
+    return {"shape": shape, "color": s.get("color") if s.get("color") in COLORS else "red",
+            "look": str(s.get("look", ""))[:30].lower(), "text": str(s.get("text") or "")[:20],
+            "label": str(s.get("label", ""))[:40], "detail": str(s.get("detail", "")), "pts": pts, "fr": fr}
 
-    Each step: {"shape", "color", "label", "detail", "pts": [(fx, fy), ...], "fr": circle radius / region width}."""
+
+def clean_drawing(data: dict, shot: Shot) -> dict:
+    """Validate the drawing. Step points become 0..1 fractions of the region (annotate) or of the
+    whiteboard (sketch). Each step: {"shape", "color", "look", "text", "label", "detail", "pts", "fr"}.
+    Sets data["sketch"] True for a blank-whiteboard drawing."""
+    def frac(v: float) -> float:
+        return min(max(v, 0.0), 1.0)
+
+    steps = []
     r = data.get("region")
-    ok = isinstance(r, dict) and all(isinstance(r.get(k), (int, float)) for k in "xywh")
+    if data.get("mode") == "sketch" or not isinstance(r, dict):
+        for s in data.get("steps") or []:
+            pts = [(frac(px / BOARD_W), frac(py / BOARD_H)) for px, py in _pairs(s.get("points"))]
+            rad = s.get("r") if isinstance(s.get("r"), (int, float)) and s["r"] > 0 else 70
+            st = _step(s, pts, min(0.45, rad / BOARD_W))
+            if st:
+                st["look"] = ""
+                steps.append(st)
+        data["region"], data["sketch"], data["steps"] = None, bool(steps), steps[:8]
+        return data
+
+    ok = all(isinstance(r.get(k), (int, float)) for k in "xywh")
     if ok:
         x, y = max(0, r["x"]), max(0, r["y"])
         w, h = min(r["w"], shot.width - x), min(r["h"], shot.height - y)
         ok = w >= 40 and h >= 40
-    steps = []
     if ok:
         for s in data.get("steps") or []:
-            pts = [(min(max((px - x) / w, 0.0), 1.0), min(max((py - y) / h, 0.0), 1.0)) for px, py in _pairs(s.get("points"))]
-            shape = s.get("shape") if s.get("shape") in SHAPES else "circle"
-            if not pts:
-                continue
-            if shape != "circle" and len(pts) < 2:
-                shape = "circle"
-            steps.append({"shape": shape, "color": s.get("color") if s.get("color") in COLORS else "red",
-                          "look": str(s.get("look", ""))[:30].lower(),
-                          "label": str(s.get("label", ""))[:40], "detail": str(s.get("detail", "")),
-                          "pts": pts if shape != "circle" else pts[:1], "fr": 0.07})
+            pts = [(frac((px - x) / w), frac((py - y) / h)) for px, py in _pairs(s.get("points"))]
+            st = _step(s, pts, 0.07)
+            if st:
+                steps.append(st)
     data["region"] = {"x": x, "y": y, "w": w, "h": h} if ok and steps else None
+    data["sketch"] = False
     data["steps"] = steps[:6] if data["region"] else []
     return data
+
+
+def whiteboard_png() -> bytes:
+    """A blank whiteboard with a faint grid, for sketches."""
+    img = Image.new("RGB", (BOARD_W, BOARD_H), (255, 255, 255))
+    d = ImageDraw.Draw(img)
+    for gx in range(0, BOARD_W, 50):
+        d.line((gx, 0, gx, BOARD_H), fill=(238, 242, 247))
+    for gy in range(0, BOARD_H, 50):
+        d.line((0, gy, BOARD_W, gy), fill=(238, 242, 247))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 SYSTEM_PLACE = (
@@ -259,12 +316,12 @@ def answer(question: str, shot: Shot, mouse: tuple[int, int], user_lang: str = "
     try:
         data = extract_json(resp.output_text)
     except ValueError:  # plain text answer: still useful
-        return {"answer": (resp.output_text or "").strip(), "point": None, "goto": None, "region": None, "steps": []}
+        return {"answer": (resp.output_text or "").strip(), "point": None, "goto": None, "region": None, "steps": [], "sketch": False}
     pt = data.get("point")
     data["point"] = pt if _inside(pt, shot) else None  # models sometimes point off-screen
     data["goto"] = _goto(data.get("goto")) if error else None
     if not draw:
-        return {**data, "region": None, "steps": []}
+        return {**data, "region": None, "steps": [], "sketch": False}
     data = clean_drawing(data, shot)
     if data["region"] and shot.full is not None:
         try:

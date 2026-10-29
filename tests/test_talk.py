@@ -26,6 +26,29 @@ def test_diagram_requests():
     assert not is_diagram("what is this button")
 
 
+def test_draw_requests_use_the_board_not_paint():
+    for t in ["can you draw me another triangle?", "can you draw for me the triangle?", "can you draw me?",
+              "explain and draw for me how it will work", "bomma geesi chupinchu", "ye bana ke samjhao"]:
+        assert is_diagram(t), t
+    assert not is_diagram("open paint and draw a circle")
+
+
+def test_sketch_steps_on_whiteboard():
+    shot = Shot("", 1280, 720, 1.5)
+    data = {"answer": "triangle", "mode": "sketch", "region": None, "steps": [
+        {"shape": "polygon", "color": "blue", "points": [[100, 600], [900, 600], [100, 100]], "label": "Triangle", "detail": "d"},
+        {"shape": "rect", "color": "green", "points": [[100, 550], [150, 600]], "label": "Right angle", "detail": "d"},
+        {"shape": "text", "color": "red", "points": [[500, 650]], "text": "a", "label": "a", "detail": "d"},
+        {"shape": "text", "color": "red", "points": [[50, 50]], "text": "", "label": "empty", "detail": "dropped"},
+    ]}
+    out = clean_drawing(data, shot)
+    assert out["sketch"] and out["region"] is None
+    assert [s["shape"] for s in out["steps"]] == ["polygon", "polygon", "text"]
+    assert out["steps"][0]["pts"][0] == (0.1, 600 / 700)
+    assert len(out["steps"][1]["pts"]) == 4  # rect corners
+    assert out["steps"][2]["text"] == "a"
+
+
 def test_clean_drawing_steps():
     shot = Shot("", 1280, 720, 1.5)
     data = {"answer": "heart", "region": {"x": 100, "y": 100, "w": 400, "h": 200}, "steps": [

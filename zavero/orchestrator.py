@@ -212,7 +212,11 @@ class Orchestrator:
             self._say(f"Sorry, I couldn't look at your screen:\n{e}", "error")
             return
         reply = res["answer"]
-        if res["region"]:
+        if res.get("sketch"):  # a new drawing on a blank whiteboard (side -1 = whiteboard)
+            self.ui.show_board.emit(talk.whiteboard_png(), res["steps"], -1.0)
+            reply += "\n" + "\n".join(f"**{i}. {s['label']}** – {s['detail']}"
+                                      for i, s in enumerate(res["steps"], 1) if s["shape"] != "text")
+        elif res["region"]:
             r = res["region"]
             side = (r["x"] + r["w"] / 2) / shot.width
             self.ui.show_board.emit(driver.crop_png(shot, r["x"], r["y"], r["w"], r["h"]), res["steps"], side)
