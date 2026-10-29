@@ -1,4 +1,5 @@
 """Instant friendly phrases (no API call) in the user's language."""
+import random
 import re
 
 PHRASES = {
@@ -77,6 +78,18 @@ def lang(text: str) -> str:
 def phrase(key: str, user_text: str = "") -> str:
     """A phrase in the same language as the user's last words."""
     return PHRASES[key][lang(user_text)]
+
+
+POINT_LABELS = {
+    "en": ["right here!", "this one!", "click this!"],
+    "te": ["ఇక్కడే!", "ఇది!", "ఇది నొక్కండి!"],
+    "hi": ["यहाँ!", "ये वाला!", "इसे दबाइए!"],
+}
+
+
+def point_label(label: str, user_text: str = "") -> str:
+    """The chip next to Chai's target: the thing's name, or a friendly 'right here!' in their language."""
+    return label.strip() or random.choice(POINT_LABELS[lang(user_text)])
 
 
 def friendly_error(e: Exception, user_text: str = "") -> str:

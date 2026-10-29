@@ -7,7 +7,7 @@ import time
 from pynput import keyboard, mouse
 
 from zavero import actionlog, briefing, config, driver, narrator, reminders, safety, talk
-from zavero.phrases import friendly_error, lang, phrase
+from zavero.phrases import friendly_error, lang, phrase, point_label
 from zavero.brain import Brain, Step
 
 # Short spoken commands. Matched as whole words/phrases after lowercasing.
@@ -235,6 +235,7 @@ class Orchestrator:
             reply += "\n" + "\n".join(f"**{i}. {s['label']}** – {s['detail']}" for i, s in enumerate(res["steps"], 1))
         elif res["point"]:
             self.ui.point_at.emit(*driver.to_screen(res["point"]["x"], res["point"]["y"], shot))
+            self.ui.set_label.emit(point_label(res.get("label", ""), text))
         self._remember("user", text)
         self._remember("zavero", reply)
         actionlog.log("talk", question=text, answer=reply, point=res["point"], region=res["region"])
@@ -262,6 +263,7 @@ class Orchestrator:
             return
         if res.get("point"):
             self.ui.point_at.emit(*driver.to_screen(res["point"]["x"], res["point"]["y"], shot))
+            self.ui.set_label.emit(f"line {line}")
         self._remember("zavero", res.get("answer", ""))
         self._say(f"**{file} · line {line}**\n{res.get('answer', '')}", "info")
 
@@ -389,6 +391,12 @@ class Orchestrator:
                 return driver.to_screen(x, y, shot)
         return None
 
+    def _point(self, target: tuple[int, int], step: Step) -> None:
+        """Chai flies to the target; the chip shows the button's name ("Pay Bill") when the model quoted it."""
+        self.ui.point_at.emit(*target)
+        quoted = re.findall(r'["“]([^"”]{1,30})["”]', step.text or "")
+        self.ui.set_label.emit(point_label(quoted[0] if quoted else "", self.user_text))
+
     def _guide(self, step: Step, shot) -> list | None:
         """Show the user what to do and wait for them. Returns acked checks, or None to switch to do mode."""
         if all(getattr(a, "type", "") in ("wait", "screenshot", "move") for a in step.actions):
@@ -398,7 +406,7 @@ class Orchestrator:
         self._check()  # "stop" may have come while the model was thinking
         target = self._target(step, shot)
         if target:
-            self.ui.point_at.emit(*target)
+            self._point(target, step)
         text = self._think(lambda: narrator.narrate("guide", self.user_text, step.text, step.actions))
         self._check()
         self._say(text, "info")
@@ -450,13 +458,13 @@ class Orchestrator:
         target = self._target(step, shot)
         if reason:
             if target:
-                ui.point_at.emit(*target)
+                self._point(target, step)
             question = narrator.narrate("confirm", self.user_text, step.text, step.actions, reason)
             if not self._ask(question):
                 raise Cancelled
             actionlog.log("approved", reason=reason, note=step.text)
         if target:
-            ui.point_at.emit(*target)
+            self._point(target, step)
         self._say_async("do", step)  # write the bubble while we click, not before
         time.sleep(0.6)  # let the avatar fly there first
         for a in step.actions:

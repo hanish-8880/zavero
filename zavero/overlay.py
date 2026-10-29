@@ -19,10 +19,10 @@ import re
 import sys
 import time
 
-from PyQt6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QTimer, QVariantAnimation, pyqtSignal
+from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QBrush, QColor, QCursor, QFont, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPen,
-    QPixmap, QRadialGradient, QTextDocument, QTransform,
+    QPixmap, QRadialGradient, QRegion, QTextDocument, QTransform,
 )
 from PyQt6.QtWidgets import QApplication, QWidget
 
@@ -45,6 +45,43 @@ TARGET = QColor("#FFB020")
 # Teacher pens for diagram explanations (talk.COLORS)
 PENS = {"red": "#E53935", "blue": "#1E66F5", "green": "#1F9D55", "orange": "#F59E0B", "purple": "#8E44AD"}
 STEP_S = 3.2  # seconds per explained step: ~1.3 s to draw, the rest to read the caption
+FAST_MS, IDLE_MS = 16, 33   # frame time while Chai moves / while it rests
+TYPE_S = 0.016              # bubble typewriter: seconds per character
+POP_S = 0.35                # bubble pop-in time
+TYPE_MAX = 300              # longer answers appear at once (long Telugu text shouldn't drag)
+
+
+def smoothstep(p: float) -> float:
+    return p * p * (3 - 2 * p)
+
+
+def ease_out_back(x: float) -> float:
+    """0 -> 1 with a small overshoot (springy pop)."""
+    c1 = 1.70158
+    return 1 + (c1 + 1) * (x - 1) ** 3 + c1 * (x - 1) ** 2
+
+
+def bezier_flight(p0: QPointF, p2: QPointF) -> tuple[QPointF, float]:
+    """Control point and duration for a curved flight (Clicky's numbers): the midpoint lifted by
+    min(distance * 0.2, 80) px, duration clamp(distance / 800, 0.6, 1.4) s."""
+    d = p2 - p0
+    dist = math.hypot(d.x(), d.y())
+    mid = (p0 + p2) / 2
+    return QPointF(mid.x(), mid.y() - min(dist * 0.2, 80)), min(max(dist / 800, 0.6), 1.4)
+
+
+def bezier(p0: QPointF, p1: QPointF, p2: QPointF, t: float) -> tuple[QPointF, QPointF]:
+    """Point and tangent of a quadratic Bezier at t."""
+    u = 1 - t
+    pos = p0 * (u * u) + p1 * (2 * u * t) + p2 * (t * t)
+    tan = (p1 - p0) * (2 * u) + (p2 - p1) * (2 * t)
+    return pos, tan
+
+
+def partial_markup(text: str, n: int) -> str:
+    """First n characters for the typewriter, with an open **bold** closed so it renders as bold."""
+    part = text[:n]
+    return part + "**" if part.count("**") % 2 else part
 
 
 def to_html(text: str) -> str:
@@ -314,6 +351,7 @@ class _ChaiWindow(QWidget):
 class Overlay(QWidget):
     show_text = pyqtSignal(str, str)   # text, mood
     point_at = pyqtSignal(int, int)    # real screen px
+    set_label = pyqtSignal(str)        # small chip next to the target ("Pay Bill", "ఇక్కడే!"); after point_at
     tap_at = pyqtSignal(int, int)      # real screen px
     go_home = pyqtSignal()             # avatar back to its corner, no target
     set_listening = pyqtSignal(bool)
@@ -363,17 +401,29 @@ class Overlay(QWidget):
         self._moved = False
         self._chai = _ChaiWindow(self)
 
-        self._fly = QVariantAnimation(self)
-        self._fly.setDuration(550)
-        self._fly.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self._fly.valueChanged.connect(self._set_avatar)
+        # Curved flight: (start, control, end, start time, duration), driven by _tick with real time.
+        self._flight: tuple[QPointF, QPointF, QPointF, float, float] | None = None
+        self._scale = 1.0    # puffs up mid-flight
+        self._lean = 0.0     # degrees, leans toward where it flies
+        self._clock0 = self._last = time.perf_counter()
+        self._dt = 0.033
+        self._text_born = -99.0                  # bubble pop + typewriter start
+        self._bubble_size = (0.0, 0.0)
+        self._bubble_last = QRectF()
+        self._target_last = QRectF()
+        self._label, self._label_born, self._label_at = "", 0.0, [0.0]  # chip text, start, per-char times
 
+        if sys.platform == "win32":  # 1 ms timer resolution so 16 ms frames are really 16 ms
+            ctypes.windll.winmm.timeBeginPeriod(1)
+            QApplication.instance().aboutToQuit.connect(lambda: ctypes.windll.winmm.timeEndPeriod(1))
         self._timer = QTimer(self)
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(33)
+        self._timer.start(IDLE_MS)
 
         self.show_text.connect(self._on_text)
         self.point_at.connect(self._on_point)
+        self.set_label.connect(self._on_label)
         self.tap_at.connect(self._on_tap)
         self.go_home.connect(self._on_home)
         self.set_listening.connect(self._on_listening)
@@ -450,7 +500,7 @@ class Overlay(QWidget):
     # --- dragging Chai (events come from _ChaiWindow, in overlay coordinates) ----
     def _drag_start(self, pos: QPointF) -> None:
         if self._on_chai(pos):
-            self._fly.stop()
+            self._flight = None
             self._drag, self._press, self._moved = self._avatar - pos, QPointF(pos), False
             self._chai.setCursor(Qt.CursorShape.ClosedHandCursor)
 
@@ -479,7 +529,16 @@ class Overlay(QWidget):
 
     # --- slots ----------------------------------------------------------
     def _on_text(self, text: str, mood: str) -> None:
+        old = self._text
         self._text, self._mood = text, mood
+        if text:
+            _, w, h = self._bubble_doc(text)
+            self._bubble_size = (w, h)
+        # Pop in and type out real messages; live transcripts ("listen") just update in place.
+        if text and mood != "listen" and text != old:
+            self._text_born = self._t
+        elif mood == "listen":
+            self._text_born = -99.0
         self.update()
         if mood == "done" and text:  # finished messages fade away on their own
             QTimer.singleShot(10_000, lambda: self._text == text and self._on_text("", mood))
@@ -492,8 +551,19 @@ class Overlay(QWidget):
 
     def _on_point(self, x: int, y: int) -> None:
         self._target = self.local(x, y)
+        self._label = ""
         if self._drag is None:
             self._fly_to(self._perch(self._target))
+
+    def _on_label(self, text: str) -> None:
+        """Chip text next to the target, typed one letter every 30-60 ms (random, feels hand-written)."""
+        self._label, self._label_born = text.strip()[:40], self._t
+        at, acc = [], 0.0
+        for _ in self._label:
+            acc += random.uniform(0.03, 0.06)
+            at.append(acc)
+        self._label_at = at or [0.0]
+        self.update()
 
     def _on_tap(self, x: int, y: int) -> None:
         self._taps.append((self.local(x, y), self._t))
@@ -516,15 +586,20 @@ class Overlay(QWidget):
         self.update()
 
     def _set_avatar(self, p) -> None:
+        """Move Chai's own small window; the big overlay repaints only what changed (in _tick)."""
         self._avatar = QPointF(p)
         self._sync_chai()
-        self.update()
 
     def _fly_to(self, p: QPointF) -> None:
-        self._fly.stop()
-        self._fly.setStartValue(QPointF(self._avatar))
-        self._fly.setEndValue(p)
-        self._fly.start()
+        """Curved flight with smoothstep easing, a scale pulse and a lean toward the travel direction."""
+        start = QPointF(self._avatar)
+        d = p - start
+        if math.hypot(d.x(), d.y()) < 2:
+            self._flight = None
+            return
+        ctrl, dur = bezier_flight(start, p)
+        self._flight = (start, ctrl, QPointF(p), self._t, dur)
+        self._timer.setInterval(FAST_MS)
 
     def _perch(self, t: QPointF) -> QPointF:
         """Where the avatar sits next to a target: up-left of it, or flipped near edges."""
@@ -533,22 +608,77 @@ class Overlay(QWidget):
         return self._clamp(QPointF(t.x() + dx, t.y() + dy))
 
     def _tick(self) -> None:
-        self._t += 0.033
+        # Real elapsed time, so a slow frame never makes motion stutter or slow down.
+        now = time.perf_counter()
+        dt = min(0.1, now - self._last)
+        self._last, self._dt = now, dt
+        self._t = now - self._clock0
         self._taps = [(p, b) for p, b in self._taps if self._t - b < 0.7]
-        self._level *= 0.72 ** (0.033 / 0.07)
-        # follow the mouse; catch clicks only while it is over Chai
+        self._level *= 0.72 ** (dt / 0.07)
+        before = QPointF(self._avatar)
+        self._step_flight()
+
         cur = QPointF(self.mapFromGlobal(QCursor.pos()))
         d = cur - self._cursor
-        speed = math.hypot(d.x(), d.y()) / 0.033
+        speed = math.hypot(d.x(), d.y()) / max(dt, 1e-3)
         self._cursor = cur
-        hover = self._on_chai(cur) and not self._invisible
+        hover = self._on_chai(cur) and not self._invisible  # catch clicks only while the mouse is on Chai
         if self._drag is None and hover != self._hover:
             self._chai.setCursor(Qt.CursorShape.OpenHandCursor if hover else Qt.CursorShape.ArrowCursor)
         self._hover = hover
         stroking = hover and speed > 40 and self._drag is None
-        self._pet += ((1.0 if stroking else 0.0) - self._pet) * (0.18 if stroking else 0.06)
-        self.update()
+        self._pet += ((1.0 if stroking else 0.0) - self._pet) * (0.18 if stroking else 0.06) * dt / 0.033
+        self._timer.setInterval(FAST_MS if self._flight else IDLE_MS)
+        self._repaint_changed(self._avatar != before)
         self._chai.update()
+
+    def _step_flight(self) -> None:
+        if self._flight is None:
+            self._scale += (1.0 - self._scale) * 0.3
+            self._lean += (0.0 - self._lean) * 0.2
+            return
+        p0, p1, p2, born, dur = self._flight
+        prog = min(1.0, (self._t - born) / dur)
+        pos, tan = bezier(p0, p1, p2, smoothstep(prog))
+        n = math.hypot(tan.x(), tan.y()) or 1
+        self._lean = 15 * tan.x() / n  # a creature leans into the flight, it doesn't spin like an arrow
+        self._scale = 1 + 0.2 * math.sin(prog * math.pi)
+        self._set_avatar(pos)
+        if prog >= 1:
+            self._flight = None
+
+    def _repaint_changed(self, moved: bool) -> None:
+        """Repaint only the parts of the full-screen overlay that change, never the whole screen each frame."""
+        region = QRegion()
+
+        def add(r: QRectF) -> None:
+            nonlocal region
+            if not r.isEmpty():
+                region = region.united(QRegion(r.toAlignedRect()))
+
+        if self._target is not None:  # pulsing ring + dashed line to Chai + label chip
+            t, a = self._target, self._avatar
+            reach = 0.15 * math.hypot(t.x() - a.x(), t.y() - a.y()) + 40
+            box = QRectF(t, a).normalized().adjusted(-reach, -reach, reach, reach)
+            box = box.united(QRectF(t.x() - 280, t.y() - 30, 560, 60))  # label chip, either side
+            add(box)
+            add(self._target_last)
+            self._target_last = box
+        elif not self._target_last.isEmpty():
+            add(self._target_last)
+            self._target_last = QRectF()
+        for pos, _ in self._taps:
+            add(QRectF(pos.x() - 45, pos.y() - 45, 90, 90))
+        if self._board:
+            add(getattr(self, "_board_rect", QRectF(self.rect())).adjusted(-20, -20, 20, 30))
+        if self._text:
+            age = self._t - self._text_born
+            typing = age < POP_S or (len(self._text) <= TYPE_MAX and age < len(self._text) * TYPE_S + 0.1)
+            if moved or typing:
+                add(self._bubble_rect(*self._bubble_size).adjusted(-12, -12, 12, 16))
+                add(self._bubble_last)
+        if not region.isEmpty():
+            self.update(region)
 
     # --- painting -------------------------------------------------------
     def paintEvent(self, event) -> None:
@@ -596,6 +726,30 @@ class Overlay(QWidget):
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             p.setPen(pen)
             p.drawPath(path)
+        if self._label:
+            self._paint_label(p, t, pulse)
+
+    def _paint_label(self, p: QPainter, t: QPointF, pulse: float) -> None:
+        """Dark pill beside the ring with the thing's name, typed letter by letter."""
+        age = self._t - self._label_born
+        shown = self._label[:sum(1 for at in self._label_at if at <= age)]
+        if not shown:
+            return
+        font = ui_font(9, bold=True)
+        p.setFont(font)
+        full_w = p.fontMetrics().horizontalAdvance(self._label) + 22
+        w, h = p.fontMetrics().horizontalAdvance(shown) + 22, 26
+        x = t.x() + pulse + 12
+        if x + full_w > self.width() - 8:  # no room on the right: put it on the left of the ring
+            x = t.x() - pulse - 12 - full_w
+        box = QRectF(x, t.y() - h / 2, w, h)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(15, 23, 42, 40))
+        p.drawRoundedRect(box.adjusted(-1, 1, 1, 3), h / 2, h / 2)
+        p.setBrush(QColor(15, 23, 42, 225))
+        p.drawRoundedRect(box, h / 2, h / 2)
+        p.setPen(QColor("#FFFFFF"))
+        p.drawText(box, Qt.AlignmentFlag.AlignCenter, shown)
 
     def _paint_avatar(self, p: QPainter) -> None:
         a = self._avatar
@@ -638,7 +792,7 @@ class Overlay(QWidget):
             d = self._cursor - a
             n = math.hypot(d.x(), d.y())
             look = QPointF(d.x() / (n + 60), d.y() / (n + 60))
-        self._look += (look - self._look) * 0.22
+        self._look += (look - self._look) * min(1.0, 0.22 * self._dt / 0.033)
 
         if self._t > self._next_blink:  # random blinks, sometimes a double blink
             self._blink_at = self._t
@@ -649,9 +803,10 @@ class Overlay(QWidget):
         if self._double and 0.26 < d0 < 0.42:
             closed = math.sin(math.pi * (d0 - 0.26) / 0.16)
 
-        rot = self._look.x() * 5 + math.sin(self._t * 14) * 4 * self._pet  # lean toward the look + petting wiggle
+        # lean toward the look + into the flight + petting wiggle
+        rot = self._look.x() * 5 + self._lean + math.sin(self._t * 14) * 4 * self._pet
         happy = (self._mood == "done" and bool(self._text)) or self._pet > 0.45 or spin < 0.95
-        paint_chai(p, c, R, self._t, self._look, listening=self._listening, happy=happy,
+        paint_chai(p, c, R * self._scale, self._t, self._look, listening=self._listening, happy=happy,
                    eye_open=1 - closed, steam=not self._thinking, rot=rot, spin=spin)
         if self._listening:  # live mic wave: five bars under Chai, so a dead mic shows right away
             for k, shape in enumerate((0.4, 0.7, 1.0, 0.7, 0.4)):
@@ -670,19 +825,40 @@ class Overlay(QWidget):
                 p.setBrush(mood)
                 p.drawEllipse(pos, 2.6, 2.6)
 
-    def _paint_bubble(self, p: QPainter) -> None:
+    @staticmethod
+    def _bubble_doc(text: str, width: float | None = None) -> tuple[QTextDocument, float, float]:
+        """Laid-out bubble text and the bubble size (w, h) it needs. width fixes the text width."""
         pad = 14
         doc = QTextDocument()
         doc.setDefaultFont(ui_font(10.5))
         doc.setDocumentMargin(0)
-        doc.setHtml(f"<div style='color:#0F172A; line-height:125%'>{to_html(self._text)}</div>")
-        doc.setTextWidth(BUBBLE_W - 2 * pad)
-        w = max(160, min(BUBBLE_W, doc.idealWidth() + 2 * pad))
-        doc.setTextWidth(w - 2 * pad)
-        h = doc.size().height() + 44  # text + header + padding
+        doc.setHtml(f"<div style='color:#0F172A; line-height:125%'>{to_html(text)}</div>")
+        if width is None:
+            doc.setTextWidth(BUBBLE_W - 2 * pad)
+            width = max(160, min(BUBBLE_W, doc.idealWidth() + 2 * pad))
+        doc.setTextWidth(width - 2 * pad)
+        return doc, width, doc.size().height() + 44  # text + header + padding
+
+    def _paint_bubble(self, p: QPainter) -> None:
+        pad = 14
+        w, h = self._bubble_size  # sized for the full text, so the bubble doesn't jump while typing
+        age = self._t - self._text_born
+        text = self._text
+        if len(text) <= TYPE_MAX and age < len(text) * TYPE_S:
+            text = partial_markup(text, int(age / TYPE_S) + 1)
+        doc, _, _ = self._bubble_doc(text, w)
         rect = self._bubble_rect(w, h)
+        self._bubble_last = rect.adjusted(-12, -12, 12, 16)
         radius = 16
         mood = MOODS.get(self._mood, ACCENT)
+        p.save()
+        if age < POP_S:  # springy pop from half size, growing out of the side next to Chai
+            s = 0.5 + 0.5 * ease_out_back(age / POP_S)
+            o = QPointF(min(max(self._avatar.x(), rect.left()), rect.right()),
+                        min(max(self._avatar.y(), rect.top()), rect.bottom()))
+            p.translate(o)
+            p.scale(s, s)
+            p.translate(-o)
 
         # soft layered shadow
         p.setPen(Qt.PenStyle.NoPen)
@@ -722,7 +898,6 @@ class Overlay(QWidget):
         p.setPen(QColor(71, 85, 105))
         p.drawText(QRectF(rect.x() + pad + 12, rect.y() + 8, w - 2 * pad - 12, 16),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, f"ZAVERO · {self._mode.upper()}")
-        p.save()
         p.translate(rect.x() + pad, rect.y() + 28)
         doc.drawContents(p)
         p.restore()
@@ -931,7 +1106,7 @@ if __name__ == "__main__":
     ov.show()
     cx, cy = int(ov.width() * ov._dpr / 2), int(ov.height() * ov._dpr / 2)
     ov.show_text.emit("నమస్తే! నేను **Zavero**. మీకు ఏ బటన్ నొక్కాలో చూపిస్తాను.", "info")
-    QTimer.singleShot(1200, lambda: ov.point_at.emit(cx, cy))
+    QTimer.singleShot(1200, lambda: (ov.point_at.emit(cx, cy), ov.set_label.emit("Pay Bill")))
     QTimer.singleShot(1300, lambda: ov.show_text.emit("ఇక్కడ **Pay Bill** బటన్ మీద క్లిక్ చేయండి.", "info"))
     QTimer.singleShot(3500, lambda: ov.tap_at.emit(cx, cy))
     QTimer.singleShot(3600, lambda: ov.set_mode.emit("Doing"))

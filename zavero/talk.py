@@ -43,11 +43,12 @@ SYSTEM = (
     "You are Zavero, a patient helper for a beginner computer user in India. The user asked a question about "
     "their screen. The red circle marks their mouse pointer: 'this' or 'here' usually means the thing under or "
     "next to it. Reply with ONLY one JSON object:\n"
-    '{"answer": str, "point": {"x": int, "y": int} | null}\n'
+    '{"answer": str, "point": {"x": int, "y": int} | null, "label": str}\n'
     "- answer: max 3 short, simple sentences. Say what it is, what it does / what the error means, and what "
     "they can do next. No jargon; explain any technical word in plain words. If it looks like a scam, phishing "
     "or a risky download, say so clearly. Keep on-screen labels in English in **bold**.\n"
     "- point: screenshot pixel centre of the thing you are talking about, or null.\n"
+    "- label: 1-3 words naming the thing you point at (its on-screen English text if it has one), or \"\".\n"
     "- Language of answer: {lang}."
 )
 SYSTEM_ERROR = (
@@ -321,6 +322,7 @@ def answer(question: str, shot: Shot, mouse: tuple[int, int], user_lang: str = "
         return {"answer": (resp.output_text or "").strip(), "point": None, "goto": None, "region": None, "steps": [], "sketch": False}
     pt = data.get("point")
     data["point"] = pt if _inside(pt, shot) else None  # models sometimes point off-screen
+    data["label"] = str(data.get("label") or "").strip()[:30]
     data["goto"] = _goto(data.get("goto")) if error else None
     if not draw:
         return {**data, "region": None, "steps": [], "sketch": False}
