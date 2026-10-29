@@ -1,0 +1,165 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<!-- Zavero 3D board: a teaching model built from simple shapes, floating over the desktop (transparent).
+     Python (zavero/board3d.py) calls loadScene(json) and setStep(n); buttons talk back through document.title. -->
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none;
+               font-family: "Segoe UI", "Nirmala UI", sans-serif; }
+  canvas { display: block; cursor: grab; }
+  canvas:active { cursor: grabbing; }
+  .label { position: absolute; transform: translate(-50%, -130%); padding: 4px 11px; border-radius: 12px;
+           background: rgba(15, 23, 42, .62); color: #fff; font-size: 12.5px; font-weight: 600; white-space: nowrap;
+           pointer-events: none; transition: opacity .3s, background .3s, transform .3s; }
+  .label.now { background: rgba(15, 23, 42, .92); font-size: 14px; transform: translate(-50%, -140%) scale(1.05); }
+  .label .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  #bar { position: absolute; top: 10px; left: 12px; right: 12px; display: flex; align-items: center; gap: 8px; }
+  #title { color: #fff; font-size: 13px; font-weight: 700; letter-spacing: .4px; padding: 5px 12px; border-radius: 14px;
+           background: rgba(15, 23, 42, .78); }
+  #gap { flex: 1; }
+  .btn { border: 0; border-radius: 14px; padding: 5px 12px; font: 600 12.5px "Segoe UI", sans-serif; cursor: pointer;
+         background: rgba(255, 255, 255, .92); color: #0f172a; box-shadow: 0 2px 8px rgba(15, 23, 42, .18); }
+  .btn.main { background: #b8733a; color: #fff; }
+  #hint { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); color: #fff; font-size: 11px;
+          padding: 3px 10px; border-radius: 10px; background: rgba(15, 23, 42, .55); white-space: nowrap; }
+</style></head><body>
+<div id="bar"><div id="title"></div><div id="gap"></div><button class="btn main" id="next">Next →</button><button class="btn" id="close">✕</button></div>
+<div id="hint">drag to turn · scroll to zoom · Esc to close</div>
+<script src="three.min.js"></script>
+<script>
+let W = innerWidth, H = innerHeight;
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(devicePixelRatio);
+renderer.setSize(W, H);
+renderer.setClearColor(0x000000, 0);
+renderer.localClippingEnabled = true;           // "cut" parts are shown half-open
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(38, W / H, 0.1, 100);
+let dist = 10.5;
+scene.add(new THREE.AmbientLight(0xffffff, 0.62));
+const sun = new THREE.DirectionalLight(0xffffff, 1.05); sun.position.set(4, 6, 6); scene.add(sun);
+const rim = new THREE.DirectionalLight(0xffffff, 0.35); rim.position.set(-5, -2, -4); scene.add(rim);
+const model = new THREE.Group(); scene.add(model);
+const cutPlane = new THREE.Plane(new THREE.Vector3(0, 0, -1), 0);   // removes the front half (z > 0)
+
+let items = [], labels = [], current = 0, born = 0;
+const cmd = (c) => { document.title = c + ":" + Date.now(); };      // read by Python (titleChanged)
+document.getElementById("next").onclick = () => cmd("next");
+document.getElementById("close").onclick = () => cmd("close");
+addEventListener("keydown", e => { if (e.key === "Escape") cmd("close"); if (e.key === "ArrowRight" || e.key === " ") cmd("next"); });
+
+function geometry(p) {
+  const [a, b, c] = p.size;
+  switch (p.shape) {
+    case "box": return new THREE.BoxGeometry(a, b, c);
+    case "cylinder": return new THREE.CylinderGeometry(a, a, b, 40);
+    case "cone": return new THREE.ConeGeometry(a, b, 40);
+    case "torus": return new THREE.TorusGeometry(a, Math.min(b, a * 0.9), 20, 60);
+    case "tube": {
+      const curve = new THREE.CatmullRomCurve3(p.points.map(q => new THREE.Vector3(...q)));
+      return new THREE.TubeGeometry(curve, 64, a, 16, false);
+    }
+    default: return new THREE.SphereGeometry(a, 48, 32);
+  }
+}
+
+window.loadScene = function (data) {
+  items.forEach(it => model.remove(it.mesh));
+  labels.forEach(l => l.remove());
+  items = []; labels = [];
+  document.getElementById("title").textContent = data.title || "";
+  for (const p of data.parts) {
+    const mat = new THREE.MeshStandardMaterial({
+      color: p.color, roughness: 0.5, metalness: 0.05, transparent: p.opacity < 1, opacity: p.opacity,
+      side: p.cut ? THREE.DoubleSide : THREE.FrontSide, clippingPlanes: p.cut ? [cutPlane] : [],
+      emissive: new THREE.Color(p.color), emissiveIntensity: 0 });
+    const mesh = new THREE.Mesh(geometry(p), mat);
+    if (p.shape !== "tube") mesh.position.set(...p.pos);
+    mesh.rotation.set(...p.rotation.map(d => d * Math.PI / 180));
+    mesh.visible = false;
+    model.add(mesh);
+    let tip = null;
+    if (p.label) {
+      const d = document.createElement("div");
+      d.className = "label";
+      d.innerHTML = `<span class="dot" style="background:${p.color}"></span>`;
+      d.appendChild(document.createTextNode(p.label));
+      d.style.opacity = 0;
+      document.body.appendChild(d);
+      labels.push(d);
+      tip = d;
+    }
+    items.push({ mesh, p, tip, shown: 0 });
+  }
+  current = 0;
+  setStep(1);
+};
+
+window.setStep = function (n) {
+  current = n;
+  born = performance.now();
+  for (const it of items) it.mesh.visible = it.p.step <= n;
+};
+
+// drag to turn, scroll to zoom; the model turns slowly by itself when left alone
+let drag = null, yaw = 0.5, pitch = 0.18, idleSince = 0;
+renderer.domElement.addEventListener("pointerdown", e => { drag = [e.clientX, e.clientY]; renderer.domElement.setPointerCapture(e.pointerId); });
+addEventListener("pointerup", () => { drag = null; idleSince = performance.now(); });
+addEventListener("pointermove", e => {
+  if (!drag) return;
+  yaw += (e.clientX - drag[0]) * 0.01;
+  pitch = Math.max(-1.2, Math.min(1.2, pitch + (e.clientY - drag[1]) * 0.008));
+  drag = [e.clientX, e.clientY];
+});
+addEventListener("wheel", e => { dist = Math.max(4, Math.min(22, dist * (e.deltaY > 0 ? 1.08 : 0.93))); }, { passive: true });
+addEventListener("resize", () => { W = innerWidth; H = innerHeight; renderer.setSize(W, H); camera.aspect = W / H; camera.updateProjectionMatrix(); });
+
+const v = new THREE.Vector3();
+
+// Labels never pile up: the current step's label goes first, the others are pushed down until they
+// don't overlap, and older ones fade so the current part stands out.
+function placeLabels() {
+  const shown = items.filter(it => it.tip && it.mesh.visible && it.front);
+  items.forEach(it => { if (it.tip && !shown.includes(it)) it.tip.style.opacity = 0; });
+  shown.sort((a, b) => (b.p.step === current) - (a.p.step === current) || a.sy - b.sy);
+  const boxes = [];
+  for (const it of shown) {
+    const w = it.tip.offsetWidth || 90, h = 26;
+    let x = it.sx, y = it.sy;
+    for (let k = 0; k < 12 && boxes.some(b => Math.abs(b[0] - x) < (b[2] + w) / 2 + 6 && Math.abs(b[1] - y) < h); k++) y += h;
+    boxes.push([x, y, w]);
+    it.tip.style.left = x + "px";
+    it.tip.style.top = y + "px";
+    it.tip.style.opacity = it.p.step === current ? 1 : 0.55;
+  }
+}
+function tick(t) {
+  if (!drag && t - idleSince > 2500) yaw += 0.0035;              // slow orbit
+  camera.position.set(dist * Math.sin(yaw) * Math.cos(pitch), dist * Math.sin(pitch), dist * Math.cos(yaw) * Math.cos(pitch));
+  camera.lookAt(0, 0, 0);
+  // the cut always faces the viewer, so the inside stays visible while the model turns
+  cutPlane.normal.set(-camera.position.x, -camera.position.y, -camera.position.z).normalize();
+  const age = (t - born) / 1000;
+  for (const it of items) {
+    if (!it.mesh.visible) continue;
+    const now = it.p.step === current;
+    const grow = now ? Math.min(1, age / 0.6) : 1;               // the new part pops in
+    const s = now ? 0.6 + 0.4 * (1 - Math.pow(1 - grow, 3)) + 0.04 * Math.sin(grow * Math.PI) : 1;
+    it.mesh.scale.setScalar(s);
+    it.mesh.material.emissiveIntensity = now ? 0.18 + 0.14 * Math.sin(t / 260) : 0;   // current part glows
+    if (it.tip) {
+      if (it.p.shape === "tube") v.set(...it.p.points[Math.floor(it.p.points.length / 2)]);  // middle of the pipe
+      else v.copy(it.mesh.position);
+      v.y += it.p.shape === "sphere" ? it.p.size[0] * 0.9 : it.p.size[1] * 0.4;
+      v.applyMatrix4(model.matrixWorld).project(camera);
+      it.sx = (v.x + 1) / 2 * W; it.sy = (1 - v.y) / 2 * H; it.front = v.z < 1;
+      it.tip.className = "label" + (now ? " now" : "");
+    }
+  }
+  placeLabels();
+  renderer.render(scene, camera);
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+cmd("ready");
+</script></body></html>

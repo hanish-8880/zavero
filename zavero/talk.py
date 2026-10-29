@@ -5,6 +5,7 @@ so the answer comes in a few seconds. The model can also point at what it is tal
 """
 import base64
 import io
+import math
 import re
 
 from PIL import Image, ImageDraw
@@ -117,6 +118,91 @@ BOARD_W, BOARD_H = 1000, 700  # whiteboard units for sketches
 COLORS = ("red", "blue", "green", "orange", "purple")
 
 
+SYSTEM_3D = (
+    "You are Zavero, a patient teacher for a beginner in India. Explain the user's topic with a small 3D model "
+    "built from simple shapes, revealed step by step like a teacher building it on the table.\n"
+    "Reply with ONLY one JSON object:\n"
+    '{"title": str, "answer": str, "parts": [{"shape": "sphere" | "box" | "cylinder" | "cone" | "torus" | "tube", '
+    '"pos": [x, y, z], "size": [a, b, c], "rotation": [rx, ry, rz], "points": [[x, y, z], ...], '
+    '"color": "#rrggbb", "label": str, "detail": str, "step": int, "cut": bool, "opacity": number}]}\n'
+    "- Units: the model fits inside -3..3 on every axis, centred at 0, y is up. rotation in degrees.\n"
+    "- size: sphere [radius], box [width, height, depth], cylinder [radius, height], cone [radius, height], "
+    "torus [ring radius, tube radius]; tube = a pipe along 2-10 points (vessels, wires, roots), size [radius].\n"
+    "- Build a recognisable, well-proportioned model (6-20 parts): bigger shapes first, then details. Overlap "
+    "shapes to form one object (e.g. ventricles = two spheres, arteries = tubes leaving the top).\n"
+    "- cut: true for an outer shell that should be shown half-open so the inside is visible (Earth's crust, "
+    "a cell membrane, heart wall). opacity 0.25-1 (default 1) for see-through shells.\n"
+    "- Realistic, meaningful colours (oxygen-rich blood red, oxygen-poor blue, core orange...).\n"
+    "- step: 1..8, teaching order; parts of one idea share a step. label: 1-4 words on the part (only on the "
+    "main part of each step). detail: one short simple sentence for that step: what it is and what it does.\n"
+    "- answer: one short sentence about the whole model. Language of title, answer, label, detail: {lang}."
+)
+SHAPES_3D = ("sphere", "box", "cylinder", "cone", "torus", "tube")
+_NAMED = {"red": "#e53935", "blue": "#1e66f5", "green": "#1f9d55", "orange": "#f59e0b", "purple": "#8e44ad",
+          "pink": "#ec4899", "yellow": "#facc15", "brown": "#8d5524", "grey": "#94a3b8", "gray": "#94a3b8",
+          "white": "#f8fafc", "black": "#1f2937"}
+
+
+def _nums(v, n: int, lo: float, hi: float, default: float) -> list[float]:
+    out = []
+    for i in range(n):
+        try:
+            x = float(v[i])
+        except (TypeError, ValueError, IndexError, KeyError):
+            x = default
+        out.append(min(max(x, lo), hi) if math.isfinite(x) else default)
+    return out
+
+
+def clean_scene(data: dict) -> dict:
+    """Validate the 3D scene: known shapes, every number clamped, colours as #rrggbb, steps renumbered 1..N.
+    Returns {"title", "answer", "parts", "steps": [{"n", "label", "detail"}]}."""
+    parts = []
+    for p in (data.get("parts") or [])[:24]:
+        if not isinstance(p, dict):
+            continue
+        shape = p.get("shape") if p.get("shape") in SHAPES_3D else "sphere"
+        color = str(p.get("color") or "").strip().lower()
+        color = color if re.fullmatch(r"#[0-9a-f]{6}", color) else _NAMED.get(color, "#e57373")
+        pts = [_nums(q, 3, -4, 4, 0) for q in (p.get("points") or [])[:10] if isinstance(q, (list, tuple))]
+        if shape == "tube" and len(pts) < 2:
+            shape = "cylinder"
+        try:
+            step = max(1, min(int(p.get("step", 1)), 8))
+        except (TypeError, ValueError):
+            step = 1
+        try:
+            opacity = min(max(float(p.get("opacity", 1)), 0.2), 1.0)
+        except (TypeError, ValueError):
+            opacity = 1.0
+        parts.append({"shape": shape, "pos": _nums(p.get("pos"), 3, -4, 4, 0),
+                      "size": _nums(p.get("size"), 3, 0.02, 4, 0.5), "rotation": _nums(p.get("rotation"), 3, -360, 360, 0),
+                      "points": pts if shape == "tube" else [], "color": color, "opacity": opacity,
+                      "label": str(p.get("label") or "")[:40], "detail": str(p.get("detail") or "")[:240],
+                      "step": step, "cut": bool(p.get("cut"))})
+    order = sorted({p["step"] for p in parts})
+    renum = {s: i + 1 for i, s in enumerate(order)}  # no gaps: 1, 2, 3...
+    steps = []
+    for p in parts:
+        p["step"] = renum[p["step"]]
+    for n in range(1, len(order) + 1):
+        main = next((p for p in parts if p["step"] == n and p["label"]), None) or next(p for p in parts if p["step"] == n)
+        steps.append({"n": n, "label": main["label"], "detail": main["detail"]})
+    return {"title": str(data.get("title") or "")[:60], "answer": str(data.get("answer") or "").strip(),
+            "parts": parts, "steps": steps}
+
+
+def answer_3d(question: str, user_lang: str = "en") -> dict:
+    """Ask Muse Spark for a 3D teaching model of the topic (no screenshot needed)."""
+    resp = config.client().responses.create(
+        model=config.MODEL_SPARK, reasoning=config.REASONING,
+        instructions=SYSTEM_3D.replace("{lang}", LANG_NAME.get(user_lang, LANG_NAME["en"])), input=question)
+    scene = clean_scene(extract_json(resp.output_text))
+    if not scene["parts"]:
+        raise ValueError("empty 3D scene")
+    return scene
+
+
 def _has(patterns: list[str], text: str) -> bool:
     return any(re.search(p, text) for p in patterns)
 
@@ -129,6 +215,18 @@ def is_diagram(text: str) -> bool:
     if _has(DRAW_ASK, t):
         return True
     return _has(DIAGRAM, t) and _has(EXPLAIN, t) and not re.search(r"\b(open|create|make|banana|chey)", t)
+
+
+THREE_D = [r"\b3 ?d\b", r"\bthree ?d\b", r"త్రీ ?డీ", r"3 ?డీ", r"3 ?डी", r"थ्री ?डी", r"\bin 3 ?dimension",
+           r"\brotat(e|ing)\b.{0,30}\b(model|show|see)", r"\binside (of|a|an|the)\b"]
+
+
+def is_3d(text: str) -> bool:
+    """'heart ni 3D lo explain chey', 'show me the earth in 3D', 'inside of an engine' -> the 3D board."""
+    t = (text or "").lower()
+    if re.search(r"\b(blender|paint ?3d|open|install|download|print)\b", t):  # an app / a task, not Chai's board
+        return False
+    return _has(THREE_D, t)
 
 
 def is_error(text: str) -> bool:

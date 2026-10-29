@@ -13,6 +13,7 @@ Preview without the rest of the app:
 """
 import ctypes
 import html
+import json
 import math
 import random
 import re
@@ -27,6 +28,11 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from zavero.phrases import lang
+
+try:  # the 3D board needs PyQt6-WebEngine (imported before QApplication exists)
+    from zavero import board3d
+except ImportError:  # pragma: no cover - 3D board just isn't offered
+    board3d = None
 
 R = 32  # avatar radius
 BUBBLE_W = 290
@@ -444,6 +450,8 @@ class Overlay(QWidget):
     show_board = pyqtSignal(bytes, list, float)  # PNG of a diagram, steps (talk.clean_drawing), its x on screen 0..1
     hide_board = pyqtSignal()
     show_keys = pyqtSignal(list)         # key chip for a shortcut step: ["Ctrl", "S"]; [] hides it
+    show_3d = pyqtSignal(str)           # JSON scene from talk.answer_3d: the floating 3D board
+    next_3d = pyqtSignal()              # next step on the 3D board (voice: next / inka / aage)
     show_arrow = pyqtSignal(int, int, int, int)  # drag / scroll arrow, real screen px from -> to
     _capture_sig = pyqtSignal(bool)    # blocking: hide/show around model screenshots
 
@@ -541,7 +549,10 @@ class Overlay(QWidget):
         self.attention.connect(lambda: setattr(self, "_twirl_at", self._t))
         self._board: tuple[QImage, list, float, float] | None = None  # image, marks, side, start time
         self.show_board.connect(self._on_board)
-        self.hide_board.connect(lambda: (setattr(self, "_board", None), self.update()))
+        self.hide_board.connect(self._on_hide_board)
+        self._board3d = None
+        self.show_3d.connect(self._on_show_3d)
+        self.next_3d.connect(lambda: self.is_3d_open and self._board3d.next())
         self._invisible = False
         self._capture_sig.connect(self._set_invisible, Qt.ConnectionType.BlockingQueuedConnection)
 
@@ -586,6 +597,8 @@ class Overlay(QWidget):
         self.repaint()
         self._chai.repaint()
         self._bubble_win.repaint()
+        if self._board3d is not None and self._board3d.isVisible():
+            self._board3d.setWindowOpacity(0.0 if on else 1.0)
 
     def hide_for_capture(self) -> None:
         """Call from a worker thread right before a model screenshot. Blocks until hidden."""
@@ -682,8 +695,31 @@ class Overlay(QWidget):
             self._copied_at = self._t
             self._bubble_win.update()
         elif b == "step":
-            self._board_next()
+            if self.is_3d_open:
+                self._board3d.next()
+            else:
+                self._board_next()
         self.button_clicked.emit(b)
+
+    @property
+    def is_3d_open(self) -> bool:
+        return self._board3d is not None and self._board3d.is_open
+
+    def _on_show_3d(self, scene_json: str) -> None:
+        if board3d is None:
+            self._on_text("3D needs PyQt6-WebEngine: pip install PyQt6-WebEngine", "error")
+            return
+        if self._board3d is None:
+            self._board3d = board3d.Board3D(self)
+        self._board = None
+        self._target = None
+        self._board3d.show_scene(json.loads(scene_json))
+
+    def _on_hide_board(self) -> None:
+        self._board = None
+        if self.is_3d_open:
+            self._board3d.close_board()
+        self.update()
 
     def _board_next(self) -> None:
         """Jump the diagram to its next step (everything drawn, caption on that step)."""
@@ -1505,6 +1541,8 @@ class Overlay(QWidget):
         ]
         screen = self._work_area()
         board = getattr(self, "_board_rect", None) if self._board else None
+        if board is None and self.is_3d_open:
+            board = self._board3d.rect_in_overlay()
         if board is not None:  # a diagram panel is open: bubble below it, else beside it
             candidates[:0] = [QRectF(board.right() - w, board.bottom() + 12, w, h),
                               QRectF(board.left() - w - 12, board.top(), w, h),

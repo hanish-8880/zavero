@@ -104,3 +104,32 @@ def test_zoom_refine_maps_back(monkeypatch):
     assert talk.refine_point(shot, {"x": 640, "y": 360}, "Settings") == {"x": 490 + 133, "y": 265 + 33}
     reply.output_text = '{"found": false}'
     assert talk.refine_point(shot, {"x": 640, "y": 360}, "Settings") == {"x": 640, "y": 360}
+
+
+def test_3d_requests():
+    from zavero.talk import is_3d
+
+    for t in ["heart ni 3D lo explain chey", "show me the earth in 3d", "explain the inside of an engine",
+              "దీన్ని త్రీడీ లో చూపించు", "इसे 3डी में समझाओ"]:
+        assert is_3d(t), t
+    for t in ["open blender", "install 3d paint", "explain this diagram", "draw me a triangle"]:
+        assert not is_3d(t), t
+
+
+def test_clean_scene():
+    from zavero.talk import clean_scene
+
+    out = clean_scene({"title": "Heart", "answer": "The heart pumps blood.", "parts": [
+        {"shape": "sphere", "pos": [0, 0, 0], "size": [1.2], "color": "red", "label": "Left ventricle", "step": 3},
+        {"shape": "tube", "points": [[0, 1, 0]], "size": [0.2], "color": "#1E66F5", "label": "Vena cava", "step": 5},
+        {"shape": "laser", "pos": [99, -99, "x"], "size": [0], "rotation": [720, 0, 0], "color": "zz", "step": 3},
+        "junk",
+    ]})
+    p = out["parts"]
+    assert len(p) == 3
+    assert p[0]["color"] == "#e53935" and p[1]["color"] == "#1e66f5" and p[2]["color"] == "#e57373"
+    assert p[1]["shape"] == "cylinder"            # a tube needs 2+ points
+    assert p[2]["shape"] == "sphere" and p[2]["pos"] == [4, -4, 0] and p[2]["size"][0] == 0.02
+    assert p[2]["rotation"][0] == 360
+    assert [s["n"] for s in out["steps"]] == [1, 2] and [x["step"] for x in p] == [1, 2, 1]  # 3, 5 -> 1, 2
+    assert out["steps"][0]["label"] == "Left ventricle"

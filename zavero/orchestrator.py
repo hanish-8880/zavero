@@ -1,5 +1,6 @@
 """Ties voice -> brain -> overlay -> driver together and holds session state."""
 import datetime
+import json
 import queue
 import re
 import threading
@@ -22,7 +23,7 @@ WORDS = {
     "yes": ["yes", "yeah", "yep", "ok", "okay", "sure", "haan", "haa", "han", "ha", "avunu", "avnu", "sare",
             "theek hai", "thik hai", "అవును", "సరే", "హా", "హాం", "ఓకే", "हाँ", "हां", "हा", "ठीक है", "ओके",
             "send", "send it", "pampu", "pampandi", "bhejo", "bhej do", "పంపు", "పంపండి", "भेजो", "भेज दो"],
-    "next": ["next", "done", "ayindi", "aipoyindi", "ho gaya", "hogaya", "అయింది", "అయ్యింది", "అయిపోయింది", "हो गया"],
+    "next": ["next", "next step", "inka", "aage", "ఇంకా", "తర్వాత", "आगे", "done", "ayindi", "aipoyindi", "ho gaya", "hogaya", "అయింది", "అయ్యింది", "అయిపోయింది", "हो गया"],
 }
 
 
@@ -128,6 +129,9 @@ class Orchestrator:
             else:
                 self.coach.feed(text)
             return
+        if self.ui.is_3d_open and intent in ("next", "yes") and not self._asking:
+            self.ui.next_3d.emit()  # "next" / "inka" / "aage": next step of the 3D model
+            return
         if not self._asking:
             self.ui.hide_board.emit()  # a new request closes the enlarged diagram
         if len(_norm(text).split()) > 2 and lang(text) != self.lang:
@@ -163,6 +167,9 @@ class Orchestrator:
             return
         if not self.busy and coach.is_goal(text):  # "teach me ..." / "I want to ...": plan + guided steps
             self.coach.start(text)
+            return
+        if talk.is_3d(text) and not self.busy:  # "heart ni 3D lo explain chey": a rotating 3D model
+            threading.Thread(target=self._talk3d, args=(text,), daemon=True).start()
             return
         if talk.is_question(text):  # "what is this?" -> quick answer; a running guide keeps going
             threading.Thread(target=self._talk, args=(text,), daemon=True).start()
@@ -331,6 +338,24 @@ class Orchestrator:
         self._say(reply, "info", ["copy"])
         if res.get("goto"):
             self._open_line(res["goto"], reply, lang(text), seq)
+
+    def _talk3d(self, text: str) -> None:
+        """Build a 3D teaching model of the topic; the board explains it step by step."""
+        self.ui.set_mode.emit("3D")
+        seq = self._talk_seq
+        try:
+            scene = self._think(lambda: talk.answer_3d(self._with_context(text), lang(text)))
+        except Exception as e:  # noqa: BLE001
+            actionlog.log("talk3d_error", text=text, error=str(e))
+            if seq == self._talk_seq:
+                self._say(friendly_error(e, text), "error")
+            return
+        if seq != self._talk_seq:  # they asked something else meanwhile
+            return
+        self.ui.show_3d.emit(json.dumps(scene, ensure_ascii=False))
+        self._remember("user", text)
+        self._remember("zavero", scene["answer"] + " " + "; ".join(s["label"] for s in scene["steps"]))
+        actionlog.log("talk3d", question=text, title=scene["title"], parts=len(scene["parts"]))
 
     def _open_line(self, goto: dict, error: str, user_lang: str, seq: int) -> None:
         """Jump to the broken line in VS Code, point at it and say exactly what to change."""
