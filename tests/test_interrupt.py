@@ -56,3 +56,18 @@ def test_answer_shows_without_interrupt(monkeypatch):
                                                          "region": None, "steps": []})
     o._talk("what is this?")
     assert ("show_text", ("fresh", "info")) in o.ui.log
+
+
+def test_uses_the_key_press_screenshot(monkeypatch):
+    o = _orch()
+    pressed = driver.Shot("pressed", 1280, 720, 1.5)
+    monkeypatch.setattr(orchestrator.mouse, "Controller", lambda: type("M", (), {"position": (5, 5)})())
+    monkeypatch.setattr(driver, "screenshot", lambda **k: pressed)
+    o._prefetch()
+    monkeypatch.setattr(driver, "screenshot", lambda **k: driver.Shot("late", 1280, 720, 1.5))
+    seen = []
+    monkeypatch.setattr(talk, "answer", lambda q, shot, *a, **k: seen.append(shot.data_url) or
+                        {"answer": "ok", "point": None, "goto": None, "region": None, "steps": []})
+    o._talk("what is this?")
+    o._talk("and this?")  # used once: the next question captures again
+    assert seen == ["pressed", "late"]

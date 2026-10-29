@@ -91,6 +91,27 @@ class Orchestrator:
         self._talk_seq += 1
         if not self.busy:  # a running guide keeps its target
             self.ui.go_home.emit()
+            threading.Thread(target=self._prefetch, daemon=True).start()
+
+    PREFETCH_S = 20  # a screenshot taken at key-press is used for quick answers if it's this fresh
+
+    def _prefetch(self) -> None:
+        """Capture the screen while the user is still talking, so the answer comes sooner."""
+        try:
+            self.ui.hide_for_capture()
+            try:
+                self._prefetched = (time.monotonic(), driver.screenshot(keep_full=True))
+            finally:
+                self.ui.show_after_capture()
+        except Exception as e:  # noqa: BLE001 - _talk will just capture again
+            actionlog.log("prefetch_error", error=str(e))
+
+    def _take_prefetched(self):
+        """The key-press screenshot if it is fresh, else None. Used once."""
+        got, self._prefetched = getattr(self, "_prefetched", None), None
+        if got and time.monotonic() - got[0] < self.PREFETCH_S:
+            return got[1]
+        return None
 
     def on_transcript(self, text: str) -> None:
         """Called with each final transcript from voice.py."""
@@ -175,6 +196,7 @@ class Orchestrator:
     def start(self, text: str, mode: str) -> None:
         self.user_text = text
         self.mode = mode
+        self._prefetched = None  # guide/do mode always looks at the screen fresh
         self._cancel.clear()
         self._strikes = 0
         task = self._with_context(text)  # earlier turns, so "APSPDCL" answers "which company?"
@@ -209,11 +231,13 @@ class Orchestrator:
         seq = self._talk_seq
         mouse_at = tuple(int(v) for v in mouse.Controller().position)
         try:
-            self.ui.hide_for_capture()
-            try:
-                shot = driver.screenshot(keep_full=draw)  # full resolution kept for a sharp enlarged copy
-            finally:
-                self.ui.show_after_capture()
+            shot = self._take_prefetched()  # taken when the hotkey went down
+            if shot is None:
+                self.ui.hide_for_capture()
+                try:
+                    shot = driver.screenshot(keep_full=draw)  # full resolution kept for a sharp enlarged copy
+                finally:
+                    self.ui.show_after_capture()
             res = self._think(lambda: talk.answer(self._with_context(text), shot, mouse_at, lang(text), draw, error))
         except Exception as e:  # noqa: BLE001
             actionlog.log("talk_error", text=text, error=str(e))
