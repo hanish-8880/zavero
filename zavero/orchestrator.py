@@ -214,8 +214,8 @@ class Orchestrator:
         if res["region"]:
             r = res["region"]
             side = (r["x"] + r["w"] / 2) / shot.width
-            self.ui.show_board.emit(driver.crop_png(shot, r["x"], r["y"], r["w"], r["h"]), res["marks"], side)
-            reply += "\n" + "\n".join(f"**{i}. {m['label']}** – {m['detail']}" for i, m in enumerate(res["marks"], 1))
+            self.ui.show_board.emit(driver.crop_png(shot, r["x"], r["y"], r["w"], r["h"]), res["steps"], side)
+            reply += "\n" + "\n".join(f"**{i}. {s['label']}** – {s['detail']}" for i, s in enumerate(res["steps"], 1))
         elif res["point"]:
             self.ui.point_at.emit(*driver.to_screen(res["point"]["x"], res["point"]["y"], shot))
         self._remember("user", text)

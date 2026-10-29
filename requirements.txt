@@ -10,4 +10,5 @@ numpy>=1.26
 PyQt6>=6.6
 google-api-python-client>=2.100
 google-auth-oauthlib>=1.2
+meta-sam-parser>=0.1.0
 pytest>=8.0

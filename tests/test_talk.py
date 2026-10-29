@@ -10,15 +10,22 @@ def test_diagram_requests():
     assert not is_diagram("what is this button")
 
 
-def test_clean_drawing_keeps_marks_inside_region():
+def test_clean_drawing_steps():
     shot = Shot("", 1280, 720, 1.5)
-    data = {"answer": "x", "region": {"x": 100, "y": 100, "w": 400, "h": 200},
-            "marks": [{"x": 300, "y": 200, "label": "CPU", "detail": "brain"},
-                      {"x": 900, "y": 600, "label": "outside", "detail": "dropped"}]}
+    data = {"answer": "heart", "region": {"x": 100, "y": 100, "w": 400, "h": 200}, "steps": [
+        {"shape": "circle", "color": "red", "points": [[300, 200]], "label": "Left ventricle", "detail": "pumps"},
+        {"shape": "path", "color": "blue", "points": [[100, 100], [500, 300]], "label": "Vena cava", "detail": "in"},
+        {"shape": "arrow", "color": "pink", "points": [[300, 200]], "label": "bad", "detail": "one point"},
+        {"shape": "path", "color": "red", "points": [], "label": "empty", "detail": "dropped"},
+    ]}
     out = clean_drawing(data, shot)
     assert out["region"] == {"x": 100, "y": 100, "w": 400, "h": 200}
-    assert out["marks"] == [{"fx": 0.5, "fy": 0.5, "label": "CPU", "detail": "brain"}]
-    assert clean_drawing({"answer": "no diagram", "region": None, "marks": []}, shot)["region"] is None
+    s = out["steps"]
+    assert len(s) == 3
+    assert s[0]["shape"] == "circle" and s[0]["pts"] == [(0.5, 0.5)]
+    assert s[1]["shape"] == "path" and s[1]["pts"] == [(0.0, 0.0), (1.0, 1.0)] and s[1]["color"] == "blue"
+    assert s[2]["shape"] == "circle" and s[2]["color"] == "red"  # 1-point arrow -> circle, unknown colour -> red
+    assert clean_drawing({"answer": "no diagram", "region": None, "steps": []}, shot)["region"] is None
 
 
 def test_questions_go_to_talk():

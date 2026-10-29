@@ -42,6 +42,9 @@ MOODS = {
     "error": QColor("#DC2626"),
 }
 TARGET = QColor("#FFB020")
+# Teacher pens for diagram explanations (talk.COLORS)
+PENS = {"red": "#E53935", "blue": "#1E66F5", "green": "#1F9D55", "orange": "#F59E0B", "purple": "#8E44AD"}
+STEP_S = 3.2  # seconds per explained step: ~1.3 s to draw, the rest to read the caption
 
 
 def to_html(text: str) -> str:
@@ -318,7 +321,7 @@ class Overlay(QWidget):
     set_thinking = pyqtSignal(bool)    # thinking dots while waiting for the model
     hide_text = pyqtSignal()
     attention = pyqtSignal()           # Chai twirls to catch the user's eye (reminders)
-    show_board = pyqtSignal(bytes, list, float)  # PNG of a diagram, marks [{fx, fy, label}], its x on screen 0..1
+    show_board = pyqtSignal(bytes, list, float)  # PNG of a diagram, steps (talk.clean_drawing), its x on screen 0..1
     hide_board = pyqtSignal()
     _capture_sig = pyqtSignal(bool)    # blocking: hide/show around model screenshots
 
@@ -714,12 +717,13 @@ class Overlay(QWidget):
         p.restore()
 
     def _paint_board(self, p: QPainter) -> None:
-        """Enlarged diagram in a glass panel, with numbered marks drawn on it one by one."""
-        img, marks, side, born = self._board
+        """Enlarged diagram in a glass panel. Coloured strokes (circle / path / arrow) draw themselves one
+        step at a time, like a teacher with pens, with a caption saying what each stroke means."""
+        img, steps, side, born = self._board
         iw, ih = img.width() / self._dpr, img.height() / self._dpr  # logical size of the crop
-        k = min(min(640, self.width() * 0.47) / iw, min(460, self.height() * 0.6) / ih, 3.0)  # enlarge, max 3x
-        w, h, pad, head = iw * k, ih * k, 12, 26
-        W, H = w + 2 * pad, h + 2 * pad + head
+        k = min(min(640, self.width() * 0.47) / iw, min(420, self.height() * 0.55) / ih, 3.0)  # enlarge, max 3x
+        w, h, pad, head, cap = iw * k, ih * k, 12, 26, 58
+        W, H = w + 2 * pad, h + 2 * pad + head + cap
         x = self.width() - W - 28 if side < 0.5 else 28  # opposite side from the real diagram
         panel = QRectF(x, 48, W, H)
         self._board_rect = panel  # the bubble keeps out of it
@@ -727,7 +731,7 @@ class Overlay(QWidget):
         for grow, alpha in ((14, 10), (8, 14), (3, 20)):
             p.setBrush(QColor(15, 23, 42, alpha))
             p.drawRoundedRect(panel.adjusted(-grow / 2, grow / 3, grow / 2, grow), 20, 20)
-        p.setBrush(QColor(255, 255, 255, 238))
+        p.setBrush(QColor(255, 255, 255, 240))
         p.setPen(QPen(QColor(255, 255, 255, 220), 1))
         p.drawRoundedRect(panel, 18, 18)
         p.setPen(QColor(71, 85, 105))
@@ -746,47 +750,116 @@ class Overlay(QWidget):
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         p.drawImage(area, img)
         p.restore()
+        if not steps:
+            return
 
-        ink = QColor("#FF4D2E")
-        age = self._t - born
-        shown = min(len(marks), int(age / 0.8) + 1)  # a new mark every 0.8 s, like a teacher drawing
-        pts = [area.topLeft() + QPointF(m["fx"] * w, m["fy"] * h) for m in marks]
-        for i in range(1, shown):  # dashed path from one part to the next
-            grow = min(1.0, (age - i * 0.8) / 0.45)
-            a, b = pts[i - 1], pts[i - 1] + (pts[i] - pts[i - 1]) * grow
-            pen = QPen(QColor(255, 77, 46, 120), 1.6, Qt.PenStyle.DashLine)
+        # Which step is being drawn now. After the last one, keep cycling the highlight so it can be re-read.
+        n, age = len(steps), self._t - born
+        drawing = age < n * STEP_S
+        cur = min(n - 1, int(age / STEP_S)) if drawing else int((age - n * STEP_S) / STEP_S) % n
+        for i, s in enumerate(steps):
+            t = age - i * STEP_S
+            if drawing and t < 0:
+                break
+            prog = min(1.0, t / 1.3) if drawing else 1.0
+            self._paint_stroke(p, s, i, area, prog, highlight=(i == cur), faded=(i != cur))
+
+        # caption: what the current stroke means
+        s = steps[cur]
+        col = QColor(PENS[s["color"]])
+        box = QRectF(area.left(), area.bottom() + 8, w, cap - 12)
+        tint = QColor(col)
+        tint.setAlpha(28)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(tint)
+        p.drawRoundedRect(box, 10, 10)
+        p.setBrush(col)
+        p.drawRoundedRect(QRectF(box.left(), box.top(), 5, box.height()), 2.5, 2.5)
+        doc = QTextDocument()
+        doc.setDefaultFont(ui_font(9.5))
+        doc.setDocumentMargin(0)
+        doc.setHtml(f"<div style='color:#0F172A'><b style='color:{col.name()}'>{cur + 1}. "
+                    f"{html.escape(s['label'])}</b> – {html.escape(s['detail'])}</div>")
+        doc.setTextWidth(w - 28)
+        p.save()
+        p.translate(box.left() + 16, box.top() + max(4.0, (box.height() - doc.size().height()) / 2))
+        doc.drawContents(p)
+        p.restore()
+
+    def _paint_stroke(self, p: QPainter, s: dict, i: int, area: QRectF, prog: float,
+                      highlight: bool, faded: bool) -> None:
+        """One teacher stroke: a circle that closes around a part, or a path/arrow that grows along a line."""
+        col = QColor(PENS[s["color"]])
+        if faded:
+            col.setAlphaF(0.6)
+        pts = [area.topLeft() + QPointF(fx * area.width(), fy * area.height()) for fx, fy in s["pts"]]
+        under = QPen(QColor(255, 255, 255, 190 if not faded else 120), 8.5)
+        ink = QPen(col, 4.5)
+        for pen in (under, ink):
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            p.setPen(pen)
-            p.drawLine(a, b)
-        for i in range(shown):
-            m, c = marks[i], pts[i]
-            t = age - i * 0.8
-            r = 12 * min(1.0, t / 0.25)
-            if i == shown - 1:  # newest mark pulses
-                ring = QColor(ink)
-                ring.setAlphaF(max(0.0, 0.5 - 0.25 * math.sin(self._t * 5)))
-                p.setPen(QPen(ring, 3))
-                p.setBrush(Qt.BrushStyle.NoBrush)
-                p.drawEllipse(c, r + 7, r + 7)
-            p.setPen(QPen(QColor("white"), 2.5))
-            p.setBrush(ink)
-            p.drawEllipse(c, r, r)
-            if t < 0.2:
-                continue
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+
+        if s["shape"] == "circle":
+            c, r = pts[0], max(14.0, s.get("fr", 0.07) * area.width())
+            rect = QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r)
+            span = int(-360 * 16 * prog)  # clockwise from the top, like a hand drawing a ring
+            for pen in (under, ink):
+                p.setPen(pen)
+                p.drawArc(rect, 90 * 16, span)
+            badge = c + QPointF(-r * 0.72, -r * 0.72)
+        else:
+            path = QPainterPath(pts[0])
+            if len(pts) == 2:
+                path.lineTo(pts[1])
+            else:  # smooth curve through the points (midpoint quadratic)
+                for a, b in zip(pts[1:-1], pts[2:]):
+                    path.quadTo(a, (a + b) / 2)
+                path.lineTo(pts[-1])
+            steps_n = 48
+            part = QPainterPath(path.pointAtPercent(0))
+            for j in range(1, steps_n + 1):
+                part.lineTo(path.pointAtPercent(prog * j / steps_n))
+            for pen in (under, ink):
+                p.setPen(pen)
+                p.drawPath(part)
+            if prog > 0.05:  # arrowhead at the pen tip shows the direction of flow
+                tip = path.pointAtPercent(prog)
+                ang = math.radians(-path.angleAtPercent(max(0.0, prog - 0.01)))
+                head = QPainterPath(tip)
+                for da in (2.6, -2.6):
+                    head.lineTo(tip + QPointF(math.cos(ang + da) * 13, math.sin(ang + da) * 13))
+                    head.moveTo(tip)
+                for pen in (under, ink):
+                    p.setPen(pen)
+                    p.drawPath(head)
+            badge = pts[0]
+
+        if prog < 0.15:
+            return
+        if highlight:  # the step being explained pulses
+            glow = QColor(PENS[s["color"]])
+            glow.setAlphaF(max(0.0, 0.45 - 0.25 * math.sin(self._t * 5)))
+            p.setPen(QPen(glow, 3))
+            p.drawEllipse(badge, 17, 17)
+        p.setPen(QPen(QColor("white"), 2))
+        p.setBrush(QColor(PENS[s["color"]]))
+        p.drawEllipse(badge, 11, 11)
+        p.setPen(QColor("white"))
+        p.setFont(ui_font(8.5, bold=True))
+        p.drawText(QRectF(badge.x() - 11, badge.y() - 11, 22, 22), Qt.AlignmentFlag.AlignCenter, str(i + 1))
+        if s.get("label") and (highlight or prog >= 1.0):  # label pill above the badge (below if no room)
+            p.setFont(ui_font(8, bold=True))
+            tw = p.fontMetrics().horizontalAdvance(s["label"]) + 14
+            lx = min(max(badge.x() - tw / 2, area.left() + 2), area.right() - tw - 2)
+            ly = badge.y() - 38 if badge.y() - 38 > area.top() else badge.y() + 16
+            pill = QRectF(lx, ly, tw, 21)
+            p.setPen(Qt.PenStyle.NoPen)
+            bg = QColor(PENS[s["color"]]).darker(160) if highlight else QColor(17, 24, 39, 200)
+            p.setBrush(bg)
+            p.drawRoundedRect(pill, 10.5, 10.5)
             p.setPen(QColor("white"))
-            p.setFont(ui_font(9, bold=True))
-            p.drawText(QRectF(c.x() - 12, c.y() - 12, 24, 24), Qt.AlignmentFlag.AlignCenter, str(i + 1))
-            if m.get("label"):  # label pill above the mark (below if no room), so the diagram text stays visible
-                p.setFont(ui_font(8.5, bold=True))
-                tw = p.fontMetrics().horizontalAdvance(m["label"]) + 16
-                lx = min(max(c.x() - tw / 2, panel.left() + 6), panel.right() - tw - 6)
-                ly = c.y() - r - 30 if c.y() - r - 30 > area.top() else c.y() + r + 8
-                pill = QRectF(lx, ly, tw, 22)
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(QColor(17, 24, 39, 215))
-                p.drawRoundedRect(pill, 11, 11)
-                p.setPen(QColor("white"))
-                p.drawText(pill, Qt.AlignmentFlag.AlignCenter, m["label"])
+            p.drawText(pill, Qt.AlignmentFlag.AlignCenter, s["label"])
 
     def _bubble_rect(self, w: float, h: float) -> QRectF:
         """Place the bubble beside the avatar, on-screen, not covering the target."""
