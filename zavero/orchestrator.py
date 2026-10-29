@@ -177,6 +177,11 @@ class Orchestrator:
         self.start(text, "do" if intent == "do" or self._answers_do_question() else "guide")
 
     _feedback_next = False
+
+    @property
+    def _zavero_acting(self) -> bool:
+        """Do mode is clicking/typing itself: those events must not dismiss its own bubbles."""
+        return self.busy and self.mode == "do"
     _onboard_q: queue.Queue | None = None
 
     def onboard(self) -> None:
@@ -198,7 +203,7 @@ class Orchestrator:
     def ask_feedback(self) -> None:
         """Tray "Send feedback": the next thing the user says is saved as a bug report."""
         self._feedback_next = True
-        self._say(phrase("feedback_ask", self.user_text), "info")
+        self._say(phrase("feedback_ask", self.user_text), "hold")
 
     def _answers_do_question(self) -> bool:
         """True if Zavero just finished a do-mode task by asking something: the reply keeps do mode."""
@@ -206,6 +211,8 @@ class Orchestrator:
                 and time.monotonic() - self._asked_at < 300)
 
     def _on_click(self, x, y, button, pressed) -> None:
+        if pressed and not self.ui.is_on_avatar(x, y) and not self._zavero_acting:
+            self.ui.dismiss.emit()  # overlay keeps "hold" bubbles (guide steps, questions)
         if pressed and self._waiting and not self.ui.is_on_avatar(x, y):  # dragging Chai is not a step
             t = self._guide_target
             self._off_target = bool(t) and (x - t[0]) ** 2 + (y - t[1]) ** 2 > config.CLICK_RADIUS ** 2
@@ -214,6 +221,9 @@ class Orchestrator:
     def _on_key(self, key) -> None:
         if key == keyboard.Key.esc:
             self.ui.hide_board.emit()
+            self.ui.hide_text.emit()
+        elif key != getattr(keyboard.Key, config.PTT_KEY) and not self._zavero_acting:
+            self.ui.dismiss.emit()  # the user started typing: an old bubble gets out of the way
         if key == keyboard.Key.esc and self.busy:
             self.stop()
         elif key == keyboard.Key.enter and self._waiting:
@@ -499,7 +509,7 @@ class Orchestrator:
             self._point(target, step)
         text = self._think(lambda: narrator.narrate("guide", self.user_text, step.text, step.actions))
         self._check()
-        self._say(text, "info")
+        self._say(text, "hold")  # stays until the user does the step
         actionlog.log("guide", note=step.text, bubble=text, target=target)
         self._guide_target = target
         self._off_target = False
@@ -529,7 +539,7 @@ class Orchestrator:
         ui = self.ui
         secret = safety.secret_reason(step.text, step.actions)
         if secret:
-            self._say(narrator.narrate("handoff", self.user_text, step.text, step.actions, secret), "warn")
+            self._say(narrator.narrate("handoff", self.user_text, step.text, step.actions, secret), "hold")
             actionlog.log("handoff", reason=secret, note=step.text)
             self._acted.clear()
             self._waiting = True
@@ -586,7 +596,7 @@ class Orchestrator:
 
     def ask(self, question: str, timeout: float = 120) -> bool:
         """Ask a yes/no question in the bubble; the user answers by voice. No answer = no."""
-        self._say(question, "warn")
+        self._say(question, "hold")  # stays until they answer
         self._answer = None
         self._answered.clear()
         self._asking = True

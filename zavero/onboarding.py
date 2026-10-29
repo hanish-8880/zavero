@@ -105,7 +105,7 @@ def run(orch, heard: queue.Queue) -> None:
         hi = ""
     user_lang = lang(hi) if hi else orch.lang
     orch.lang = user_lang
-    ui.show_text.emit(TEXT["name"][user_lang], "info")
+    ui.show_text.emit(TEXT["name"][user_lang], "hold")  # waits for their answer
     try:
         name = pick_name(heard.get(timeout=WAIT_S))
     except queue.Empty:
@@ -128,6 +128,9 @@ def run(orch, heard: queue.Queue) -> None:
         ui.show_text.emit(demo["comment"] or "👀", "done")
         time.sleep(4)
         ui.go_home.emit()
-    ui.show_text.emit(TEXT["powers"][user_lang].format(name=name) + "\n\n" + TEXT["privacy"][user_lang], "info")
+    # Two short bubbles instead of one tall one.
+    ui.show_text.emit(TEXT["powers"][user_lang].format(name=name), "hold")
+    time.sleep(8)
+    ui.show_text.emit(TEXT["privacy"][user_lang], "info")  # fades after its reading time (~6 s)
     briefing.save_state(onboarded=True)
     actionlog.log("onboarded", lang=user_lang, name=name, demo=bool(demo))

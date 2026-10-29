@@ -40,6 +40,7 @@ MOODS = {
     "warn": QColor("#F59E0B"),
     "done": QColor("#16A34A"),
     "error": QColor("#DC2626"),
+    "hold": QColor("#B8733A"),  # waits for the user (guide step, question): never fades by itself
 }
 TARGET = QColor("#FFB020")
 # Teacher pens for diagram explanations (talk.COLORS)
@@ -49,6 +50,23 @@ FAST_MS, IDLE_MS = 16, 33   # frame time while Chai moves / while it rests
 TYPE_S = 0.016              # bubble typewriter: seconds per character
 POP_S = 0.35                # bubble pop-in time
 TYPE_MAX = 300              # longer answers appear at once (long Telugu text shouldn't drag)
+
+
+KEEP_MOODS = ("listen", "hold")  # bubbles that stay: live transcript, and ones waiting for the user
+FADE_S = 0.4
+HOVER_ALPHA, HOVER_S = 0.15, 0.15  # see-through while the mouse is over the bubble
+DISMISS_AFTER_S = 1.5              # a click / typing closes a bubble that has been up this long
+
+
+def reading_time(text: str) -> float:
+    """How long a bubble stays before fading: max(6 s, 2.5 s + 55 ms per character), at most 25 s."""
+    return min(25.0, max(6.0, 2.5 + 0.055 * len(text)))
+
+
+def safe_area(avail: QRectF, overlay_origin: QPointF, margin: float = 12) -> QRectF:
+    """The screen's work area (no taskbar) in overlay coordinates, shrunk by margin."""
+    return QRectF(avail.x() - overlay_origin.x() + margin, avail.y() - overlay_origin.y() + margin,
+                  avail.width() - 2 * margin, avail.height() - 2 * margin)
 
 
 def smoothstep(p: float) -> float:
@@ -368,6 +386,7 @@ class Overlay(QWidget):
     set_mode = pyqtSignal(str)         # "Guide" / "Doing" / ...
     set_thinking = pyqtSignal(bool)    # thinking dots while waiting for the model
     hide_text = pyqtSignal()
+    dismiss = pyqtSignal()             # user clicked elsewhere / started typing: close a non-"hold" bubble
     attention = pyqtSignal()           # Chai twirls to catch the user's eye (reminders)
     show_board = pyqtSignal(bytes, list, float)  # PNG of a diagram, steps (talk.clean_drawing), its x on screen 0..1
     hide_board = pyqtSignal()
@@ -419,6 +438,10 @@ class Overlay(QWidget):
         self._text_born = -99.0                  # bubble pop + typewriter start
         self._bubble_size = (0.0, 0.0)
         self._bubble_last = QRectF()
+        self._shown_at = -99.0      # when the current bubble text appeared
+        self._fade = 1.0            # 1 -> 0 while the bubble fades out
+        self._hover_alpha = 1.0     # drops to HOVER_ALPHA while the mouse is over the bubble
+        self._bubble_anim = False
         self._target_last = QRectF()
         self._label, self._label_born, self._label_at = "", 0.0, [0.0]  # chip text, start, per-char times
         self.follow_mode = "auto"   # set from main.py (saved in data/state.json); see FOLLOW_MODES
@@ -447,6 +470,7 @@ class Overlay(QWidget):
         self.set_mode.connect(self._on_mode)
         self.set_thinking.connect(self._on_thinking)
         self.hide_text.connect(lambda: self._on_text("", self._mood))
+        self.dismiss.connect(self._on_dismiss)
         self.attention.connect(lambda: setattr(self, "_twirl_at", self._t))
         self._board: tuple[QImage, list, float, float] | None = None  # image, marks, side, start time
         self.show_board.connect(self._on_board)
@@ -548,7 +572,8 @@ class Overlay(QWidget):
         old = self._text
         self._text, self._mood = text, mood
         if text and text != old:
-            self._active_at = self._t
+            self._active_at = self._shown_at = self._t
+            self._fade = 1.0
         if text:
             _, w, h = self._bubble_doc(text)
             self._bubble_size = (w, h)
@@ -558,8 +583,24 @@ class Overlay(QWidget):
         elif mood == "listen":
             self._text_born = -99.0
         self.update()
-        if mood == "done" and text:  # finished messages fade away on their own
-            QTimer.singleShot(10_000, lambda: self._text == text and self._on_text("", mood))
+
+    def _on_dismiss(self) -> None:
+        if self._text and self._mood not in KEEP_MOODS and self._t - self._shown_at >= DISMISS_AFTER_S:
+            self._shown_at = -999.0  # past its reading time: _step_bubble fades it out now
+
+    def _step_bubble(self) -> None:
+        """Fade a bubble out after its reading time; make it see-through while the mouse is over it."""
+        old = (self._fade, self._hover_alpha)
+        if self._text and self._mood not in KEEP_MOODS and self._t - self._shown_at > reading_time(self._text):
+            self._fade = max(0.0, self._fade - self._dt / FADE_S)
+            if self._fade == 0:
+                self._on_text("", self._mood)
+                self._fade = 1.0
+        over = bool(self._text) and self._bubble_last.contains(self._cursor)
+        goal = HOVER_ALPHA if over else 1.0
+        step = (1 - HOVER_ALPHA) * self._dt / HOVER_S
+        self._hover_alpha = max(goal, self._hover_alpha - step) if over else min(goal, self._hover_alpha + step)
+        self._bubble_anim = (self._fade, self._hover_alpha) != old
 
     def _on_board(self, png: bytes, marks: list, side: float) -> None:
         img = QImage.fromData(png)
@@ -695,6 +736,7 @@ class Overlay(QWidget):
         self._cursor = cur
         self._step_follow()
         self._step_visibility()
+        self._step_bubble()
         hover = self._on_chai(cur) and not self._invisible  # catch clicks only while the mouse is on Chai
         if self._drag is None and hover != self._hover:
             self._chai.setCursor(Qt.CursorShape.OpenHandCursor if hover else Qt.CursorShape.ArrowCursor)
@@ -747,7 +789,7 @@ class Overlay(QWidget):
         if self._text:
             age = self._t - self._text_born
             typing = age < POP_S or (len(self._text) <= TYPE_MAX and age < len(self._text) * TYPE_S + 0.1)
-            if moved or typing:
+            if moved or typing or self._bubble_anim:
                 add(self._bubble_rect(*self._bubble_size).adjusted(-12, -12, 12, 16))
                 add(self._bubble_last)
         if not region.isEmpty():
@@ -925,6 +967,7 @@ class Overlay(QWidget):
         radius = 16
         mood = MOODS.get(self._mood, ACCENT)
         p.save()
+        p.setOpacity(self._fade * self._hover_alpha)  # fading out / see-through under the mouse
         if age < POP_S:  # springy pop from half size, growing out of the side next to Chai
             s = 0.5 + 0.5 * ease_out_back(age / POP_S)
             o = QPointF(min(max(self._avatar.x(), rect.left()), rect.right()),
@@ -1152,7 +1195,7 @@ class Overlay(QWidget):
             QRectF(a.x() - w / 2, a.y() - gap - h, w, h),   # above
             QRectF(a.x() - w / 2, a.y() + gap, w, h),       # below
         ]
-        screen = QRectF(8, 8, self.width() - 16, self.height() - 16)
+        screen = self._work_area()
         board = getattr(self, "_board_rect", None) if self._board else None
         if board is not None:  # a diagram panel is open: bubble below it, else beside it
             candidates[:0] = [QRectF(board.right() - w, board.bottom() + 12, w, h),
@@ -1169,9 +1212,14 @@ class Overlay(QWidget):
                 continue
             return r
         r = candidates[0]
-        r.moveLeft(min(max(r.left(), 8), self.width() - w - 8))
-        r.moveTop(min(max(r.top(), 8), self.height() - h - 8))
+        r.moveLeft(min(max(r.left(), screen.left()), screen.right() - w))
+        r.moveTop(min(max(r.top(), screen.top()), screen.bottom() - h))
         return r
+
+    def _work_area(self) -> QRectF:
+        """Where bubbles may go: the screen minus the taskbar, 12 px in from the edges."""
+        g = self.geometry()
+        return safe_area(QRectF(QApplication.primaryScreen().availableGeometry()), QPointF(g.x(), g.y()))
 
 
 if __name__ == "__main__":
