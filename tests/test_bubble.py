@@ -10,9 +10,10 @@ from test_follow import _overlay  # noqa: E402
 
 
 def test_reading_time():
-    assert reading_time("ok") == 6.0                     # short: at least 6 s
-    assert reading_time("x" * 100) == 2.5 + 5.5          # 2.5 s + 55 ms per character
-    assert reading_time("x" * 2000) == 25.0              # capped
+    # counted after typing (16 ms per character, up to 300 characters)
+    assert reading_time("ok") == 2 * 0.016 + 10.0                          # short: at least 10 s
+    assert abs(reading_time("x" * 100) - (1.6 + 4.0 + 9.0)) < 1e-9         # 4 s + 90 ms per character
+    assert reading_time("x" * 2000) == 60.0                                # capped, no typing for long text
 
 
 def test_safe_area_keeps_out_of_the_taskbar():
@@ -37,12 +38,13 @@ def test_bubble_fades_after_reading_time_but_hold_stays():
     assert ov._text == "Click **Pay Bill**"
 
 
-def test_click_dismisses_after_1_5_s_only():
+def test_click_dismisses_after_5_s_only():
     ov = _overlay()
     ov._on_text("Here is your answer", "info")
-    ov._on_dismiss()  # too soon: user may have clicked by accident
-    assert ov._t - ov._shown_at < 1.5
-    ov._t += 2
+    ov._t += 3
+    ov._on_dismiss()  # too soon: the user is still reading, the click was for something else
+    assert ov._t - ov._shown_at < 5
+    ov._t += 3
     ov._on_dismiss()
     for _ in range(30):
         ov._step_bubble()
@@ -66,3 +68,13 @@ def test_see_through_on_hover():
     for _ in range(12):
         ov._step_bubble()
     assert ov._hover_alpha == 1.0
+
+
+def test_bubble_waits_while_a_diagram_is_explained():
+    ov = _overlay()
+    ov._board = (None, [{"shape": "circle"}], 0.3, ov._t)  # diagram board open
+    ov._on_text("1. Left ventricle - pumps blood", "info")
+    for _ in range(600):  # 10 s of frames: the reading clock is paused
+        ov._t += ov._dt
+        ov._step_bubble()
+    assert ov._text

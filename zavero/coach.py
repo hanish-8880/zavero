@@ -23,7 +23,7 @@ import time
 import uuid
 from datetime import datetime, timedelta
 
-from zavero import actionlog, config, driver, research, safety, skills
+from zavero import actionlog, config, driver, research, safety, skills, talk
 from zavero.phrases import LANG_NAMES, lang
 from zavero.reminders import extract_json
 
@@ -479,6 +479,9 @@ class Coach:
                       .replace("{step}", step["title"]).replace("{why}", step["why"]).replace("{retry}", retry)
                       .replace("{lang}", LANG_NAMES[lg]))
             st = clean_step(self.model(system, step["title"], shot), shot.width, shot.height)
+            if st["x"] is not None and st["action"] in ("click", "double_click", "choose", "type", "drag", "scroll"):
+                better = talk.refine_point(shot, {"x": st["x"], "y": st["y"]}, st["label"] or step["title"])
+                st["x"], st["y"] = better["x"], better["y"]  # zoomed second look: lands exactly on it
             self._last_shot = shot
             if st["action"] == "done_already":
                 return {"ok": True, "mistakes": mistakes}

@@ -85,9 +85,14 @@ SYSTEM_DRAW = (
     "nothing on screen fits. Draw from scratch on a blank whiteboard 1000 wide x 700 tall.\n"
     "Reply with ONLY one JSON object:\n"
     '{"answer": str, "mode": "annotate" | "sketch", "region": {"x": int, "y": int, "w": int, "h": int} | null, '
-    '"steps": [{"shape": "circle" | "path" | "arrow" | "line" | "polygon" | "rect" | "text", '
+    '"steps": [{"shape": "circle" | "ellipse" | "path" | "arrow" | "line" | "polygon" | "rect" | "text", '
     '"color": "red" | "blue" | "green" | "orange" | "purple", "points": [[x, y], ...], "r": int, '
-    '"text": str, "look": str, "label": str, "detail": str}]}\n'
+    '"fill": bool, "text": str, "look": str, "label": str, "detail": str}]}\n'
+    "- Draw like a clear 2D textbook diagram, not just lines: every object or part is a CLOSED shape "
+    "(polygon / rect / circle / ellipse) with fill true, so it shows as a soft coloured area with an outline; "
+    "lines and arrows only connect parts or show flow; label each part with a short text step next to it.\n"
+    "- To point at one part of a diagram, use an arrow whose LAST point is exactly on that part; use a circle "
+    "(fill false) only to group an area.\n"
     "- annotate: region = box around the diagram in screenshot pixels (little margin, not the whole screen); "
     "points in screenshot pixels. look = 1-3 plain English words for how the thing LOOKS (colour + shape), "
     "e.g. 'blue tube', 'pink box', 'arrow'. Never a subject word.\n"
@@ -97,16 +102,17 @@ SYSTEM_DRAW = (
     "- shapes: circle = ring (points = [centre], r = radius). path = trace along a line / vessel / route in the "
     "direction things flow (2-8 points, gets an arrowhead). arrow = movement from one part to another "
     "([from, to]). line = plain line or curve, no arrowhead (2-8 points). polygon = closed shape through its "
-    "corners. rect = [top-left, bottom-right]. text = write `text` (a few characters like 'a', 'c = 5', "
+    "corners. rect = [top-left, bottom-right]. ellipse = oval inside [top-left, bottom-right]. text = write `text` (a few characters like 'a', 'c = 5', "
     "'90°') with its centre at points[0]. For flow inside a tube or wire use path, not arrow.\n"
-    "- steps: 2-6 for annotate, 3-8 for sketch, in teaching order.\n"
+    "- steps: 2-6 for annotate, 4-12 for sketch (shapes first, then their labels), in teaching order.\n"
     "- Use colours with meaning (blood: blue = without oxygen, red = with oxygen; circuits: red +, blue -; "
     "maths: one colour per side or idea). Name the colour in the detail, e.g. 'This blue side a ...'.\n"
     "- label: 1-4 words. detail: one short simple sentence: what this stroke shows and how it connects to the next.\n"
     "- answer: one short sentence: what the whole drawing shows.\n"
     "- Language of answer, label and detail: {lang}. Keep maths symbols and technical words as usual."
 )
-SHAPES = ("circle", "path", "arrow", "line", "polygon", "rect", "text")
+SHAPES = ("circle", "ellipse", "path", "arrow", "line", "polygon", "rect", "text")
+CLOSED = ("circle", "ellipse", "polygon")  # shapes that can be filled
 BOARD_W, BOARD_H = 1000, 700  # whiteboard units for sketches
 COLORS = ("red", "blue", "green", "orange", "purple")
 
@@ -163,7 +169,7 @@ def _pairs(points) -> list[tuple[float, float]]:
     return out
 
 
-def _step(s: dict, pts: list[tuple[float, float]], fr: float) -> dict | None:
+def _step(s: dict, pts: list[tuple[float, float]], fr: float, fill_default: bool = False) -> dict | None:
     """One drawing step with points as 0..1 fractions; None if it can't be drawn."""
     shape = s.get("shape") if s.get("shape") in SHAPES else "circle"
     if not pts:
@@ -173,13 +179,16 @@ def _step(s: dict, pts: list[tuple[float, float]], fr: float) -> dict | None:
     if shape == "rect" and len(pts) >= 2:  # two corners -> four
         (x1, y1), (x2, y2) = pts[0], pts[1]
         shape, pts = "polygon", [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
-    if shape in ("path", "arrow", "line", "polygon") and len(pts) < 2:
+    if shape in ("path", "arrow", "line", "polygon", "ellipse") and len(pts) < 2:
         shape = "circle"
+    if shape == "ellipse":
+        pts = pts[:2]
     if shape in ("circle", "text"):
         pts = pts[:1]
     return {"shape": shape, "color": s.get("color") if s.get("color") in COLORS else "red",
             "look": str(s.get("look", ""))[:30].lower(), "text": str(s.get("text") or "")[:20],
-            "label": str(s.get("label", ""))[:40], "detail": str(s.get("detail", "")), "pts": pts, "fr": fr}
+            "label": str(s.get("label", ""))[:40], "detail": str(s.get("detail", "")), "pts": pts, "fr": fr,
+            "fill": shape in CLOSED and bool(s.get("fill", fill_default))}
 
 
 def clean_drawing(data: dict, shot: Shot) -> dict:
@@ -195,11 +204,11 @@ def clean_drawing(data: dict, shot: Shot) -> dict:
         for s in data.get("steps") or []:
             pts = [(frac(px / BOARD_W), frac(py / BOARD_H)) for px, py in _pairs(s.get("points"))]
             rad = s.get("r") if isinstance(s.get("r"), (int, float)) and s["r"] > 0 else 70
-            st = _step(s, pts, min(0.45, rad / BOARD_W))
+            st = _step(s, pts, min(0.45, rad / BOARD_W), fill_default=True)  # sketches: filled 2D shapes
             if st:
                 st["look"] = ""
                 steps.append(st)
-        data["region"], data["sketch"], data["steps"] = None, bool(steps), steps[:8]
+        data["region"], data["sketch"], data["steps"] = None, bool(steps), steps[:12]
         return data
 
     ok = all(isinstance(r.get(k), (int, float)) for k in "xywh")
@@ -239,6 +248,61 @@ SYSTEM_PLACE = (
     "the two parts. Reply with ONLY JSON: "
     '{"steps": [{"n": int, "points": [[x, y], ...], "r": int}]}'
 )
+
+
+SYSTEM_ZOOM = (
+    "This image is a zoomed-in part of a computer screen. Find the EXACT centre of: {what}. Reply with ONLY "
+    'JSON {"found": bool, "x": int, "y": int}: x, y in THIS image\'s pixels; found false if it is not here.'
+)
+ZOOM_NEAR = (300, 190)  # model px around the guess: a sharp close look (~450x285 real px at 1080p)
+ZOOM_WIDE = (640, 380)  # when the thing is not in the close look: a wider look first, then close again
+
+
+def refine_point(shot: Shot, pt: dict, what: str) -> dict:
+    """Second look for precise pointing (first guesses are often 100-300 px off): a sharp, enlarged piece of
+    the screen around the guess; if the thing is not in it, a wider piece, then a close look at what that
+    found. Returns the better point (screenshot px), or the first guess."""
+    if shot.full is None or not pt or not what.strip():
+        return pt
+    near = _zoom(shot, pt, what, *ZOOM_NEAR)
+    if near:
+        return near
+    wide = _zoom(shot, pt, what, *ZOOM_WIDE)
+    if not wide:
+        return pt
+    return _zoom(shot, wide, what, *ZOOM_NEAR) or wide
+
+
+def _zoom(shot: Shot, pt: dict, what: str, zw: int, zh: int) -> dict | None:
+    """Exact centre of `what` inside a zw x zh (model px) piece around pt, or None if it isn't there."""
+    zw, zh = min(zw, shot.width), min(zh, shot.height)
+    x0 = min(max(pt["x"] - zw / 2, 0), max(0, shot.width - zw))
+    y0 = min(max(pt["y"] - zh / 2, 0), max(0, shot.height - zh))
+    img = Image.open(io.BytesIO(crop_png(shot, x0, y0, zw, zh))).convert("RGB")
+    k = min(2.0, 1280 / img.width)  # enlarge so small icons and text are clear, at most 1280 px wide
+    if k > 1.05:
+        img = img.resize((round(img.width * k), round(img.height * k)), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=88)
+    try:
+        resp = config.client().responses.create(
+            model=config.MODEL_SPARK, reasoning=config.REASONING,
+            instructions=SYSTEM_ZOOM.replace("{what}", what[:200]),
+            input=[{"role": "user", "content": [
+                {"type": "input_text", "text": f"Where exactly is: {what[:200]}"},
+                {"type": "input_image", "image_url": "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()},
+            ]}],
+        )
+        data = extract_json(resp.output_text)
+    except Exception as e:  # noqa: BLE001 - the first guess is still shown
+        print(f"[talk] zoom refine failed: {e}")
+        return None
+    if not data.get("found") or not all(isinstance(data.get(v), (int, float)) for v in "xy"):
+        return None
+    if not (0 <= data["x"] < img.width and 0 <= data["y"] < img.height):
+        return None
+    per_px = img.width / zw  # image px per model px
+    return {"x": round(x0 + data["x"] / per_px), "y": round(y0 + data["y"] / per_px)}
 
 
 def region_image(shot: Shot, data: dict) -> Image.Image:
@@ -325,6 +389,8 @@ def answer(question: str, shot: Shot, mouse: tuple[int, int], user_lang: str = "
     data["label"] = str(data.get("label") or "").strip()[:30]
     data["goto"] = _goto(data.get("goto")) if error else None
     if not draw:
+        if data["point"]:  # zoom in and check, so the arrow lands exactly on it
+            data["point"] = refine_point(shot, data["point"], data["label"] or question.split("The user now says:")[-1])
         return {**data, "region": None, "steps": [], "sketch": False}
     data = clean_drawing(data, shot)
     if data["region"] and shot.full is not None:

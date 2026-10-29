@@ -300,7 +300,7 @@ class Orchestrator:
             if shot is None:
                 self.ui.hide_for_capture()
                 try:
-                    shot = driver.screenshot(keep_full=draw)  # full resolution kept for a sharp enlarged copy
+                    shot = driver.screenshot(keep_full=True)  # full resolution: sharp diagram copy + zoomed pointing check
                 finally:
                     self.ui.show_after_capture()
             res = self._think(lambda: talk.answer(self._with_context(text), shot, mouse_at, lang(text), draw, error))

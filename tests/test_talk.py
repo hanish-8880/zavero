@@ -77,3 +77,30 @@ def test_tasks_stay_tasks():
     for t in ["how do I pay the bill", "open my college website", "current bill ela kattali?",
               "poster kaise banate hai", "what is this, open it for me", "open notepad"]:
         assert not is_question(t), t
+
+
+def test_sketch_shapes_are_filled_2d():
+    shot = Shot("", 1280, 720, 1.5)
+    data = {"answer": "cell", "mode": "sketch", "region": None, "steps": [
+        {"shape": "ellipse", "color": "green", "points": [[100, 100], [900, 600]], "label": "Cell"},
+        {"shape": "circle", "color": "purple", "points": [[500, 350]], "r": 80, "fill": False, "label": "Ring"},
+        {"shape": "line", "color": "blue", "points": [[0, 0], [10, 10]], "label": "Edge"},
+    ]}
+    s = clean_drawing(data, shot)["steps"]
+    assert s[0]["shape"] == "ellipse" and len(s[0]["pts"]) == 2 and s[0]["fill"]  # filled by default
+    assert not s[1]["fill"] and not s[2]["fill"]                                  # asked unfilled / not closed
+
+
+def test_zoom_refine_maps_back(monkeypatch):
+    from PIL import Image
+
+    from zavero import talk
+
+    shot = Shot("", 1280, 720, 1.5, full=Image.new("RGB", (1920, 1080)))
+    reply = type("R", (), {"output_text": '{"found": true, "x": 400, "y": 100}'})()
+    fake = type("C", (), {"responses": type("X", (), {"create": lambda self, **k: reply})()})()
+    monkeypatch.setattr(talk.config, "client", lambda: fake)
+    # close look: 300x190 model px around (640, 360) = x0 490, y0 265; 450 real px -> x2 = 900 px (3 per model px)
+    assert talk.refine_point(shot, {"x": 640, "y": 360}, "Settings") == {"x": 490 + 133, "y": 265 + 33}
+    reply.output_text = '{"found": false}'
+    assert talk.refine_point(shot, {"x": 640, "y": 360}, "Settings") == {"x": 640, "y": 360}

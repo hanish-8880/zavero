@@ -69,12 +69,14 @@ BTN_H = 28
 KEEP_MOODS = ("listen", "hold")  # bubbles that stay: live transcript, and ones waiting for the user
 FADE_S = 0.4
 HOVER_ALPHA, HOVER_S = 0.15, 0.15  # see-through while the mouse is over the bubble
-DISMISS_AFTER_S = 1.5              # a click / typing closes a bubble that has been up this long
+DISMISS_AFTER_S = 5.0              # a click / typing closes a bubble only after it has been up this long
 
 
 def reading_time(text: str) -> float:
-    """How long a bubble stays before fading: max(6 s, 2.5 s + 55 ms per character), at most 25 s."""
-    return min(25.0, max(6.0, 2.5 + 0.055 * len(text)))
+    """How long a bubble stays before fading, counted after it has finished typing:
+    max(10 s, 4 s + 90 ms per character), at most 60 s (beginners read slowly; Telugu/Hindi too)."""
+    typing = len(text) * TYPE_S if len(text) <= TYPE_MAX else 0.0
+    return typing + min(60.0, max(10.0, 4.0 + 0.09 * len(text)))
 
 
 def safe_area(avail: QRectF, overlay_origin: QPointF, margin: float = 12) -> QRectF:
@@ -705,6 +707,8 @@ class Overlay(QWidget):
     def _step_bubble(self) -> None:
         """Fade a bubble out after its reading time; make it see-through while the mouse is over it."""
         old = (self._fade, self._hover_alpha)
+        if self._text and (self._board or self._thinking or self._bubble_last.contains(self._cursor)):
+            self._shown_at += self._dt  # still explaining / still being read: the clock waits
         if self._text and self._mood not in KEEP_MOODS and self._t - self._shown_at > reading_time(self._text):
             self._fade = max(0.0, self._fade - self._dt / FADE_S)
             if self._fade == 0:
@@ -843,8 +847,8 @@ class Overlay(QWidget):
 
     def _perch(self, t: QPointF) -> QPointF:
         """Where the avatar sits next to a target: up-left of it, or flipped near edges."""
-        dx = -62 if t.x() > 120 else 62
-        dy = -62 if t.y() > 120 else 62
+        dx = -110 if t.x() > 180 else 110  # far enough for the pointing arrow between Chai and the target
+        dy = -96 if t.y() > 180 else 96
         return self._clamp(QPointF(t.x() + dx, t.y() + dy))
 
     def _tick(self) -> None:
@@ -1016,32 +1020,48 @@ class Overlay(QWidget):
                 x += plus
 
     def _paint_target(self, p: QPainter) -> None:
-        t = self._target
-        pulse = 15 + 3 * math.sin(self._t * 5)
-        glow = QColor(TARGET)
-        glow.setAlpha(40)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(glow)
-        p.drawEllipse(t, pulse + 5, pulse + 5)
-        p.setPen(QPen(TARGET, 2.5))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawEllipse(t, pulse, pulse)
-        # dashed curve from the avatar to the target
-        a = self._avatar
+        """A bold arrow whose tip touches the exact spot (more precise than a ring around it), coming from
+        Chai's side and gently tapping toward the target, plus a dashed trail back to Chai."""
+        t, a = self._target, self._avatar
         d = t - a
         dist = math.hypot(d.x(), d.y())
-        if dist > R + pulse + 4:
+        ux, uy = (d.x() / dist, d.y() / dist) if dist > 1 else (0.6, 0.8)  # from Chai toward the target
+        tap = 4 + 4 * math.sin(self._t * 6)       # tip stays on the spot, the arrow taps toward it
+        tip = t - QPointF(ux, uy) * 2
+        tail = t - QPointF(ux, uy) * (74 + tap)
+        nx, ny = -uy, ux
+        head_len, half, shaft = 28, 17, 6.5
+        neck = tip - QPointF(ux, uy) * head_len
+        glow = QColor(TARGET)
+        glow.setAlpha(55)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(glow)
+        p.drawEllipse(t, 7 + tap * 0.5, 7 + tap * 0.5)  # soft glow on the exact spot
+        arrow = QPainterPath(tail + QPointF(nx, ny) * shaft)
+        arrow.lineTo(neck + QPointF(nx, ny) * shaft)
+        arrow.lineTo(neck + QPointF(nx, ny) * half)
+        arrow.lineTo(tip)
+        arrow.lineTo(neck - QPointF(nx, ny) * half)
+        arrow.lineTo(neck - QPointF(nx, ny) * shaft)
+        arrow.lineTo(tail - QPointF(nx, ny) * shaft)
+        arrow.closeSubpath()
+        p.setBrush(QColor(15, 23, 42, 45))
+        p.drawPath(arrow.translated(2, 3))  # shadow
+        p.setPen(QPen(QColor("white"), 2.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        p.setBrush(TARGET)
+        p.drawPath(arrow)
+        if dist > R + 90:  # dashed trail from Chai to the arrow
             start = a + d * (R / dist)
-            end = t - d * ((pulse + 4) / dist)
-            mid = (start + end) / 2 + QPointF(-d.y(), d.x()) * 0.15
+            mid = (start + tail) / 2 + QPointF(-d.y(), d.x()) * 0.12
             path = QPainterPath(start)
-            path.quadTo(mid, end)
+            path.quadTo(mid, tail)
             pen = QPen(TARGET, 2, Qt.PenStyle.DashLine)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawPath(path)
         if self._label:
-            self._paint_label(p, t, pulse)
+            self._paint_label(p, t, 16)
 
     def _paint_label(self, p: QPainter, t: QPointF, pulse: float) -> None:
         """Dark pill beside the ring with the thing's name, typed letter by letter."""
@@ -1053,9 +1073,10 @@ class Overlay(QWidget):
         p.setFont(font)
         full_w = p.fontMetrics().horizontalAdvance(self._label) + 22
         w, h = p.fontMetrics().horizontalAdvance(shown) + 22, 26
-        x = t.x() + pulse + 12
-        if x + full_w > self.width() - 8:  # no room on the right: put it on the left of the ring
-            x = t.x() - pulse - 12 - full_w
+        right = self._avatar.x() <= t.x()  # the chip goes on the side away from Chai's arrow
+        x = t.x() + pulse + 12 if right else t.x() - pulse - 12 - full_w
+        if x + full_w > self.width() - 8 or x < 8:  # no room there: the other side
+            x = t.x() - pulse - 12 - full_w if right else t.x() + pulse + 12
         box = QRectF(x, t.y() - h / 2, w, h)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(15, 23, 42, 40))
@@ -1347,6 +1368,28 @@ class Overlay(QWidget):
         doc.drawContents(p)
         p.restore()
 
+    @staticmethod
+    def _fill_shape(p: QPainter, shape: QPainterPath, col: QColor, prog: float, faded: bool) -> None:
+        """Soft 2D look for a closed shape: a light shadow and a gentle colour fill that fades in while the
+        outline is drawn (lighter at the top, like a textbook figure)."""
+        k = min(1.0, prog * 1.4) * (0.55 if faded else 1.0)
+        if k <= 0:
+            return
+        p.save()
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(15, 23, 42, int(22 * k)))
+        p.drawPath(shape.translated(4, 5))
+        box = shape.boundingRect()
+        grad = QLinearGradient(box.topLeft(), box.bottomLeft())
+        top, bottom = QColor(col), QColor(col)
+        top.setAlphaF(0.14 * k)
+        bottom.setAlphaF(0.32 * k)
+        grad.setColorAt(0, top)
+        grad.setColorAt(1, bottom)
+        p.setBrush(QBrush(grad))
+        p.drawPath(shape)
+        p.restore()
+
     def _paint_stroke(self, p: QPainter, s: dict, i: int, area: QRectF, prog: float,
                       highlight: bool, faded: bool, clean: bool = False) -> None:
         """One teacher stroke: a circle that closes around a part, a path/arrow/line that grows, a polygon,
@@ -1362,14 +1405,22 @@ class Overlay(QWidget):
             pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         p.setBrush(Qt.BrushStyle.NoBrush)
 
-        if s["shape"] == "circle":
-            c, r = pts[0], max(14.0, s.get("fr", 0.07) * area.width())
-            rect = QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r)
+        if s["shape"] in ("circle", "ellipse"):
+            if s["shape"] == "ellipse":
+                rect = QRectF(pts[0], pts[1]).normalized()
+                c, r = rect.center(), min(rect.width(), rect.height()) / 2
+            else:
+                c, r = pts[0], max(14.0, s.get("fr", 0.07) * area.width())
+                rect = QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r)
+            if s.get("fill"):
+                shape = QPainterPath()
+                shape.addEllipse(rect)
+                self._fill_shape(p, shape, col, prog, faded)
             span = int(-360 * 16 * prog)  # clockwise from the top, like a hand drawing a ring
             for pen in (under, ink):
                 p.setPen(pen)
                 p.drawArc(rect, 90 * 16, span)
-            badge = c + QPointF(-r * 0.72, -r * 0.72)
+            badge = QPointF(rect.left() + rect.width() * 0.15, rect.top() + rect.height() * 0.15)
         elif s["shape"] == "text":  # handwriting: the text appears letter by letter
             word = s.get("text", "")[: max(1, math.ceil(len(s.get("text", "")) * prog))]
             f = ui_font(17, bold=True)
@@ -1387,16 +1438,21 @@ class Overlay(QWidget):
             if s["shape"] == "polygon":  # straight sides, closed, e.g. a triangle
                 for q in pts[1:] + pts[:1]:
                     path.lineTo(q)
+                if s.get("fill"):
+                    self._fill_shape(p, path, col, prog, faded)
             elif len(pts) == 2:
                 path.lineTo(pts[1])
             else:  # smooth curve through the points (midpoint quadratic)
                 for a, b in zip(pts[1:-1], pts[2:]):
                     path.quadTo(a, (a + b) / 2)
                 path.lineTo(pts[-1])
-            steps_n = 48
-            part = QPainterPath(path.pointAtPercent(0))
-            for j in range(1, steps_n + 1):
-                part.lineTo(path.pointAtPercent(prog * j / steps_n))
+            if prog >= 0.999:  # finished: the exact path, so corners stay sharp
+                part = path
+            else:  # growing like a pen stroke
+                steps_n = 120
+                part = QPainterPath(path.pointAtPercent(0))
+                for j in range(1, steps_n + 1):
+                    part.lineTo(path.pointAtPercent(prog * j / steps_n))
             for pen in (under, ink):
                 p.setPen(pen)
                 p.drawPath(part)
