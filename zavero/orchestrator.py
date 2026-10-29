@@ -129,6 +129,10 @@ class Orchestrator:
             else:
                 self.coach.feed(text)
             return
+        loop = self._circled()
+        if loop and intent not in ("stop", "no") and not self._asking:  # circled a part while asking
+            threading.Thread(target=self._talk_circle, args=(text, loop), daemon=True).start()
+            return
         if self.ui.is_3d_open and intent in ("next", "yes") and not self._asking:
             self.ui.next_3d.emit()  # "next" / "inka" / "aage": next step of the 3D model
             return
@@ -338,6 +342,52 @@ class Orchestrator:
         self._say(reply, "info", ["copy"])
         if res.get("goto"):
             self._open_line(res["goto"], reply, lang(text), seq)
+
+    # --- circle to ask -------------------------------------------------------
+    def _circled(self) -> list | None:
+        """The loop the user drew with the mouse while holding the talk key (real px), or None."""
+        try:
+            ink = self.ui.take_ink()
+            return ink if talk.circled_region(ink) else None
+        except Exception:  # noqa: BLE001 - no overlay (tests) or an odd trail: just no circle
+            return None
+
+    def on_silent(self) -> bool:
+        """The key was released without words: a circle alone means 'what is this?'. True if handled."""
+        loop = self._circled()
+        if not loop or self.coach.active or self._asking:
+            return False
+        question = {"te": "ఇది ఏంటి?", "hi": "यह क्या है?"}.get(self.lang, "What is this?")
+        threading.Thread(target=self._talk_circle, args=(question, loop), daemon=True).start()
+        return True
+
+    def _talk_circle(self, text: str, loop: list) -> None:
+        """Explain the part the user circled (on a diagram, the 3D board, or anything on screen)."""
+        self.ui.set_mode.emit("Explain")
+        self.ui.keep_lasso(loop)
+        seq = self._talk_seq
+        context = self.ui.board_context()
+        self._prefetched = None  # taken at key press, before the circle (and without the 3D board)
+        try:
+            self.ui.hide_for_capture(keep_3d=True)
+            try:
+                shot = driver.screenshot(keep_full=True)
+            finally:
+                self.ui.show_after_capture()
+            pts = [((x - shot.left) / shot.scale, (y - shot.top) / shot.scale) for x, y in loop]
+            res = self._think(lambda: talk.answer_circle(self._with_context(text), shot, pts, context, lang(text)))
+        except Exception as e:  # noqa: BLE001
+            actionlog.log("circle_error", text=text, error=str(e))
+            if seq == self._talk_seq:
+                self._say(friendly_error(e, text), "error")
+            return
+        if seq != self._talk_seq:
+            return
+        reply = (f"**{res['label']}**\n" if res["label"] else "") + res["answer"]
+        self._remember("user", f"(circled a part) {text}")
+        self._remember("zavero", reply)
+        actionlog.log("circle_talk", question=text, label=res["label"], answer=res["answer"])
+        self._say(reply, "info", ["copy"])
 
     def _talk3d(self, text: str) -> None:
         """Build a 3D teaching model of the topic; the board explains it step by step."""

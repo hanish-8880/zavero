@@ -110,7 +110,8 @@ def main() -> None:
             overlay.set_thinking.emit(True)
         elif msg.startswith("Heard nothing"):
             overlay.set_thinking.emit(False)
-            overlay.show_text.emit(phrase("heard_nothing", orch.user_text), "info")
+            if not orch.on_silent():  # a circle drawn without words still gets explained
+                overlay.show_text.emit(phrase("heard_nothing", orch.user_text), "info")
         elif not msg.startswith("Mic"):
             overlay.show_text.emit(msg, "info")
 

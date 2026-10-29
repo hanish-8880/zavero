@@ -542,6 +542,11 @@ class Overlay(QWidget):
         self.hide_text.connect(lambda: self._on_text("", self._mood))
         self.dismiss.connect(self._on_dismiss)
         self._keys: list[str] = []
+        self._ink: list[tuple[float, float]] = []   # mouse trail while the talk key is held (overlay px)
+        self._ink_at = -99.0
+        self._lasso = None                          # (points, since): the circled part being explained
+        self._keep_3d = False
+        self._ink_dirty = False
         self._arrow: tuple[QPointF, QPointF] | None = None
         self.show_keys.connect(lambda keys: (setattr(self, "_keys", [str(k) for k in keys][:5]), self.update()))
         self.show_arrow.connect(lambda x1, y1, x2, y2: (setattr(self, "_arrow", (self.local(x1, y1), self.local(x2, y2))),
@@ -597,11 +602,13 @@ class Overlay(QWidget):
         self.repaint()
         self._chai.repaint()
         self._bubble_win.repaint()
-        if self._board3d is not None and self._board3d.isVisible():
+        if self._board3d is not None and self._board3d.isVisible() and not (on and self._keep_3d):
             self._board3d.setWindowOpacity(0.0 if on else 1.0)
 
-    def hide_for_capture(self) -> None:
-        """Call from a worker thread right before a model screenshot. Blocks until hidden."""
+    def hide_for_capture(self, keep_3d: bool = False) -> None:
+        """Call from a worker thread right before a model screenshot. Blocks until hidden.
+        keep_3d: the 3D board stays in the picture (the user is asking about it)."""
+        self._keep_3d = keep_3d
         self._capture_sig.emit(True)
         time.sleep(0.08)  # let Windows redraw the screen without us
 
@@ -701,6 +708,15 @@ class Overlay(QWidget):
                 self._board_next()
         self.button_clicked.emit(b)
 
+    def board_context(self) -> str:
+        """What the open board is explaining (for questions about a circled part)."""
+        if self.is_3d_open:
+            sc = self._board3d.scene
+            return f"a 3D model '{sc['title']}' with parts: " + "; ".join(f"{s['label']} ({s['detail']})" for s in sc["steps"])
+        if self._board:
+            return "an enlarged diagram with these marks: " + "; ".join(f"{s['label']} ({s['detail']})" for s in self._board[1])
+        return ""
+
     @property
     def is_3d_open(self) -> bool:
         return self._board3d is not None and self._board3d.is_open
@@ -717,6 +733,7 @@ class Overlay(QWidget):
 
     def _on_hide_board(self) -> None:
         self._board = None
+        self._lasso = None
         if self.is_3d_open:
             self._board3d.close_board()
         self.update()
@@ -802,7 +819,67 @@ class Overlay(QWidget):
     def _on_listening(self, on: bool) -> None:
         self._listening = on
         self._active_at = self._t
+        if on:  # a new press: start a fresh pen trail
+            self._ink, self._ink_at = [], self._t
         self.update()
+
+    # --- circle to ask: hold the key and draw a loop around the part you mean -----
+    INK_KEEP_S = 15  # an unused trail disappears after this
+
+    def _step_ink(self) -> None:
+        if self._listening:
+            c = self._cursor
+            if not self._ink or math.dist((c.x(), c.y()), self._ink[-1]) > 3:
+                self._ink.append((c.x(), c.y()))
+                self._ink = self._ink[-600:]
+        elif self._ink and self._t - self._ink_at > self.INK_KEEP_S:
+            self._ink = []
+            self._ink_dirty = True
+        if self._ink_dirty:
+            self._ink_dirty = False
+            self.update()
+        if self._lasso and self._t - self._lasso[1] > 25:
+            self._lasso = None
+            self.update()
+
+    def take_ink(self) -> list[tuple[int, int]]:
+        """The pen trail of the last key press in real screen px (safe from any thread); clears it."""
+        ink, self._ink = list(self._ink), []
+        self._ink_dirty = True  # GUI thread repaints the old trail away
+        g = self.geometry()
+        return [(round((x + g.x()) * self._dpr), round((y + g.y()) * self._dpr)) for x, y in ink]
+
+    def keep_lasso(self, real_pts: list[tuple[int, int]]) -> None:
+        """Keep the user's loop highlighted while Zavero explains it (thread-safe: set + repaint later)."""
+        self._lasso = ([self.local(x, y) for x, y in real_pts], self._t)
+        self._ink_dirty = True
+
+    def _paint_ink(self, p: QPainter) -> None:
+        if len(self._ink) > 1 and (self._listening or self._t - self._ink_at < self.INK_KEEP_S):
+            pen = QPen(QColor(255, 176, 32, 210), 4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            path = QPainterPath(QPointF(*self._ink[0]))
+            for q in self._ink[1:]:
+                path.lineTo(QPointF(*q))
+            p.drawPath(path)
+        if self._lasso:
+            pts, born = self._lasso
+            path = QPainterPath(pts[0])
+            for q in pts[1:]:
+                path.lineTo(q)
+            path.closeSubpath()
+            glow = QColor(TARGET)
+            glow.setAlpha(28)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(glow)
+            p.drawPath(path)
+            pen = QPen(TARGET, 3, Qt.PenStyle.CustomDashLine, Qt.PenCapStyle.RoundCap)
+            pen.setDashPattern([2.5, 2])
+            pen.setDashOffset(-self._t * 6)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(path)
 
     def _on_thinking(self, on: bool) -> None:
         self._thinking = on
@@ -905,6 +982,7 @@ class Overlay(QWidget):
         self._step_follow()
         self._step_visibility()
         self._step_bubble()
+        self._step_ink()
         hover = self._on_chai(cur) and not self._invisible  # catch clicks only while the mouse is on Chai
         if self._drag is None and hover != self._hover:
             self._chai.setCursor(Qt.CursorShape.OpenHandCursor if hover else Qt.CursorShape.ArrowCursor)
@@ -954,6 +1032,10 @@ class Overlay(QWidget):
             add(QRectF(pos.x() - 45, pos.y() - 45, 90, 90))
         if self._board:
             add(getattr(self, "_board_rect", QRectF(self.rect())).adjusted(-20, -20, 20, 30))
+        if self._ink or self._lasso:  # pen trail / circled part
+            pts = list(self._ink) + ([(q.x(), q.y()) for q in self._lasso[0]] if self._lasso else [])
+            xs, ys = [q[0] for q in pts], [q[1] for q in pts]
+            add(QRectF(min(xs) - 12, min(ys) - 12, max(xs) - min(xs) + 24, max(ys) - min(ys) + 24))
         if self._arrow:  # marching dashes
             a, b = self._arrow
             add(QRectF(a, b).normalized().adjusted(-30, -30, 30, 30))
@@ -999,6 +1081,8 @@ class Overlay(QWidget):
             self._paint_board(p)
         if self._arrow:
             self._paint_arrow(p)
+        if self._ink or self._lasso:
+            self._paint_ink(p)
         if self._keys:
             self._paint_keys(p)
         # Chai and the bubble are painted by their own small windows (_ChaiWindow, _BubbleWindow).

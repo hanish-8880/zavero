@@ -67,3 +67,15 @@ def test_only_while_i_talk_fades_out():
     ov.show_mode = "always"
     ov._step_visibility()
     assert ov._opacity == 1.0
+
+
+def test_pen_trail_while_talking():
+    ov = _overlay()
+    ov._on_listening(True)
+    for x, y in [(100, 100), (101, 100), (140, 120), (160, 160)]:  # tiny moves are skipped
+        ov._cursor = QPointF(x, y)
+        ov._step_ink()
+    ov._on_listening(False)
+    ink = ov.take_ink()
+    assert len(ink) == 3 and ov._ink == []
+    assert ink[0] == (round(100 * ov._dpr), round(100 * ov._dpr))  # real screen px

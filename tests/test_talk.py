@@ -133,3 +133,36 @@ def test_clean_scene():
     assert p[2]["rotation"][0] == 360
     assert [s["n"] for s in out["steps"]] == [1, 2] and [x["step"] for x in p] == [1, 2, 1]  # 3, 5 -> 1, 2
     assert out["steps"][0]["label"] == "Left ventricle"
+
+
+def test_circled_region():
+    import math
+
+    from zavero.talk import circled_region
+
+    loop = [(500 + 80 * math.cos(a / 20 * math.tau), 300 + 50 * math.sin(a / 20 * math.tau)) for a in range(21)]
+    assert circled_region(loop) == (420, 250, 160, 100)
+    open_c = loop[:12]                                        # half a circle: not a loop
+    assert circled_region(open_c) is None
+    line = [(100 + 20 * i, 200 + i) for i in range(20)]       # moving the mouse across while talking
+    assert circled_region(line) is None
+    tiny = [(500 + 5 * math.cos(a), 300 + 5 * math.sin(a)) for a in range(12)]
+    assert circled_region(tiny) is None
+    zigzag = [(100 + 10 * i, 200 + (40 if i % 2 else 0)) for i in range(30)]
+    assert circled_region(zigzag) is None
+
+
+def test_mark_loop_draws_on_the_screenshot():
+    import base64
+    import io
+
+    from PIL import Image
+
+    from zavero.driver import encode
+    from zavero.talk import mark_loop
+
+    shot = Shot(encode(Image.new("RGB", (200, 100), "white")), 200, 100, 1.0)
+    url = mark_loop(shot, [(20, 20), (180, 20), (180, 80), (20, 80)])
+    img = Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1])))
+    r, g, b = img.getpixel((100, 20))
+    assert r > 200 and g < 80  # red line where the loop is

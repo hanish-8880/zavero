@@ -203,6 +203,76 @@ def answer_3d(question: str, user_lang: str = "en") -> dict:
     return scene
 
 
+SYSTEM_CIRCLE = (
+    "You are Zavero, a patient teacher for a beginner in India. While asking, the user drew a loop with their "
+    "mouse around one part of their screen (the red loop in the first image; the second image is a sharp "
+    "close-up of what is inside it). {context}They want THAT part explained. Reply with ONLY JSON: "
+    '{"answer": str, "label": str}\n'
+    "- answer: max 4 short, simple sentences: what the circled part is, what it does / means, and how it "
+    "connects to the rest of the diagram or screen. No jargon. If their words ask something specific, answer that.\n"
+    "- label: 1-4 words naming the circled part.\n- Language: {lang}. Keep on-screen labels in English in **bold**."
+)
+MIN_LOOP = 30  # real px: smaller wiggles are not a circle
+
+
+def circled_region(points: list[tuple[float, float]]) -> tuple[int, int, int, int] | None:
+    """If the mouse path is a loop around something, its bounding box (x, y, w, h) in the same px; else None.
+    A loop: big enough, ends near where it started (or crosses itself), and encloses real area."""
+    if len(points) < 8:
+        return None
+    xs, ys = [p[0] for p in points], [p[1] for p in points]
+    w, h = max(xs) - min(xs), max(ys) - min(ys)
+    if w < MIN_LOOP or h < MIN_LOOP:
+        return None
+    diag = math.hypot(w, h)
+    length = sum(math.dist(a, b) for a, b in zip(points, points[1:]))
+    closed = math.dist(points[0], points[-1]) < 0.45 * diag or any(
+        math.dist(points[-1], q) < 0.12 * diag for q in points[: len(points) // 2])
+    area = abs(sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(points, points[1:] + points[:1]))) / 2
+    if not closed or length < 2.2 * max(w, h) or area < 0.3 * w * h:
+        return None
+    return round(min(xs)), round(min(ys)), round(w), round(h)
+
+
+def mark_loop(shot: Shot, loop: list[tuple[float, float]]) -> str:
+    """Screenshot data URL with the user's loop drawn in red (loop in screenshot px)."""
+    raw = base64.b64decode(shot.data_url.split(",", 1)[1])
+    img = Image.open(io.BytesIO(raw)).convert("RGB")
+    ImageDraw.Draw(img).line(loop + loop[:1], fill=(255, 0, 0), width=4, joint="curve")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=80)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def answer_circle(question: str, shot: Shot, loop: list[tuple[float, float]], context: str = "",
+                  user_lang: str = "en") -> dict:
+    """Explain the part the user circled. loop in screenshot px. Returns {"answer", "label"}."""
+    xs, ys = [p[0] for p in loop], [p[1] for p in loop]
+    pad = 18
+    x0, y0 = max(0, min(xs) - pad), max(0, min(ys) - pad)
+    w, h = min(shot.width - x0, max(xs) - min(xs) + 2 * pad), min(shot.height - y0, max(ys) - min(ys) + 2 * pad)
+    content = [{"type": "input_text", "text": question or "What is this part?"},
+               {"type": "input_image", "image_url": mark_loop(shot, loop)}]
+    if shot.full is not None:  # sharp close-up of the inside of the loop
+        img = Image.open(io.BytesIO(crop_png(shot, x0, y0, w, h))).convert("RGB")
+        k = min(3.0, 900 / max(img.width, img.height))
+        if k > 1.05:
+            img = img.resize((round(img.width * k), round(img.height * k)), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=88)
+        content.append({"type": "input_image", "image_url": "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()})
+    ctx = f"Context - what is being explained on screen: {context}\n" if context else ""
+    resp = config.client().responses.create(
+        model=config.MODEL_SPARK, reasoning=config.REASONING,
+        instructions=SYSTEM_CIRCLE.replace("{context}", ctx).replace("{lang}", LANG_NAME.get(user_lang, LANG_NAME["en"])),
+        input=[{"role": "user", "content": content}])
+    try:
+        data = extract_json(resp.output_text)
+    except ValueError:
+        data = {"answer": (resp.output_text or "").strip(), "label": ""}
+    return {"answer": str(data.get("answer") or "").strip(), "label": str(data.get("label") or "")[:30]}
+
+
 def _has(patterns: list[str], text: str) -> bool:
     return any(re.search(p, text) for p in patterns)
 
