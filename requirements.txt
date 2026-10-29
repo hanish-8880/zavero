@@ -8,6 +8,7 @@ pynput>=1.7.7
 sounddevice>=0.4.6
 numpy>=1.26
 PyQt6>=6.6
+PyQt6-WebEngine>=6.6  # 3D board (three.js, bundled in zavero/web)
 google-api-python-client>=2.100
 google-auth-oauthlib>=1.2
 meta-sam-parser>=0.1.0
