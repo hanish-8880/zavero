@@ -92,8 +92,10 @@ SYSTEM_DRAW = (
     "- Draw like a clear 2D textbook diagram, not just lines: every object or part is a CLOSED shape "
     "(polygon / rect / circle / ellipse) with fill true, so it shows as a soft coloured area with an outline; "
     "lines and arrows only connect parts or show flow; label each part with a short text step next to it.\n"
-    "- To point at one part of a diagram, use an arrow whose LAST point is exactly on that part; use a circle "
-    "(fill false) only to group an area.\n"
+    "- annotate (marks are drawn right on top of their diagram): give EACH part you explain its own circle "
+    "(fill false, centre on the part, r just big enough to enclose it: a resistor, a battery, a valve, a room); "
+    "trace wires, pipes and flow with path in the direction things move; use arrow for cause -> effect "
+    "between two parts. Explain every important part, one step each.\n"
     "- annotate: region = box around the diagram in screenshot pixels (little margin, not the whole screen); "
     "points in screenshot pixels. look = 1-3 plain English words for how the thing LOOKS (colour + shape), "
     "e.g. 'blue tube', 'pink box', 'arrow'. Never a subject word.\n"
@@ -105,7 +107,7 @@ SYSTEM_DRAW = (
     "([from, to]). line = plain line or curve, no arrowhead (2-8 points). polygon = closed shape through its "
     "corners. rect = [top-left, bottom-right]. ellipse = oval inside [top-left, bottom-right]. text = write `text` (a few characters like 'a', 'c = 5', "
     "'90°') with its centre at points[0]. For flow inside a tube or wire use path, not arrow.\n"
-    "- steps: 2-6 for annotate, 4-12 for sketch (shapes first, then their labels), in teaching order.\n"
+    "- steps: 2-8 for annotate, 4-12 for sketch (shapes first, then their labels), in teaching order.\n"
     "- Use colours with meaning (blood: blue = without oxygen, red = with oxygen; circuits: red +, blue -; "
     "maths: one colour per side or idea). Name the colour in the detail, e.g. 'This blue side a ...'.\n"
     "- label: 1-4 words. detail: one short simple sentence: what this stroke shows and how it connects to the next.\n"
@@ -392,7 +394,7 @@ def clean_drawing(data: dict, shot: Shot) -> dict:
                 steps.append(st)
     data["region"] = {"x": x, "y": y, "w": w, "h": h} if ok and steps else None
     data["sketch"] = False
-    data["steps"] = steps[:6] if data["region"] else []
+    data["steps"] = steps[:8] if data["region"] else []
     return data
 
 

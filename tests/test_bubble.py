@@ -78,3 +78,26 @@ def test_bubble_waits_while_a_diagram_is_explained():
         ov._t += ov._dt
         ov._step_bubble()
     assert ov._text
+
+
+def test_marks_on_the_page_step_through_each_part():
+    from zavero.overlay import MARK_S
+
+    ov = _overlay()
+    steps = [{"shape": "circle", "color": "red", "pts": [(0.2, 0.5)], "fr": 0.08, "label": "Battery", "detail": "Pushes current",
+              "text": "", "look": "", "fill": False},
+             {"shape": "circle", "color": "blue", "pts": [(0.7, 0.5)], "fr": 0.08, "label": "Resistor", "detail": "Slows it",
+              "text": "", "look": "", "fill": False}]
+    ov._on_show_marks(100, 100, 600, 400, steps, "A simple circuit.")
+    assert ov.steps_open and "1/2 · Battery" in ov._text and "A simple circuit." in ov._text
+    assert ov._buttons == ["close", "step"]                 # Next → button
+    ov._t += MARK_S + 0.1
+    ov._step_marks()
+    assert "2/2 · Resistor" in ov._text                       # moved on by itself after reading time
+    ov._t += MARK_S + 0.1
+    ov._step_marks()
+    assert ov._marks["all"] and "2/2" in ov._text             # stays on the last part
+    ov._next_step()
+    assert "1/2 · Battery" in ov._text                        # Next walks through again
+    ov._on_hide_board()                                       # Esc / scroll / new question
+    assert ov._marks is None and not ov.steps_open

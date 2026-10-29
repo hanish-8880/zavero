@@ -50,6 +50,9 @@ def classify(text: str) -> str:
     return "task"
 
 
+MARK_MIN = (260, 160)  # model px: diagrams at least this big are marked in place, smaller ones enlarged
+
+
 class Cancelled(Exception):
     pass
 
@@ -81,7 +84,7 @@ class Orchestrator:
         self.coach = coach.Coach(self)
         self.gmail = None  # Gmail API client, set by main.py when Gmail is connected
         self.lang = briefing.load_state().get("lang", "en")  # user's language, remembered across runs
-        mouse.Listener(on_click=self._on_click).start()
+        mouse.Listener(on_click=self._on_click, on_scroll=self._on_scroll).start()
         keyboard.Listener(on_press=self._on_key).start()
 
     @property
@@ -133,7 +136,7 @@ class Orchestrator:
         if loop and intent not in ("stop", "no") and not self._asking:  # circled a part while asking
             threading.Thread(target=self._talk_circle, args=(text, loop), daemon=True).start()
             return
-        if self.ui.is_3d_open and intent in ("next", "yes") and not self._asking:
+        if self.ui.steps_open and intent in ("next", "yes") and not self._asking:
             self.ui.next_3d.emit()  # "next" / "inka" / "aage": next step of the 3D model
             return
         if not self._asking:
@@ -241,6 +244,10 @@ class Orchestrator:
             self._off_target = bool(t) and (x - t[0]) ** 2 + (y - t[1]) ** 2 > config.CLICK_RADIUS ** 2
             self._acted.set()
 
+    def _on_scroll(self, x, y, dx, dy) -> None:
+        if self.ui.steps_open and not self._zavero_acting:
+            self.ui.hide_board.emit()  # marks drawn on the page would no longer line up with it
+
     def _on_key(self, key) -> None:
         if key == keyboard.Key.esc:
             self.ui.hide_board.emit()
@@ -328,8 +335,17 @@ class Orchestrator:
             self.ui.show_board.emit(talk.whiteboard_png(), res["steps"], -1.0)
             reply += "\n" + "\n".join(f"**{i}. {s['label']}** – {s['detail']}"
                                       for i, s in enumerate(res["steps"], 1) if s["shape"] != "text")
+        elif res["region"] and res["region"]["w"] >= MARK_MIN[0] and res["region"]["h"] >= MARK_MIN[1]:
+            r = res["region"]  # big enough: circle and explain each part right on the user's own diagram
+            x, y = driver.to_screen(r["x"], r["y"], shot)
+            self.ui.show_marks.emit(x, y, round(r["w"] * shot.scale), round(r["h"] * shot.scale), res["steps"], reply)
+            reply += "\n" + "\n".join(f"**{i}. {s['label']}** – {s['detail']}" for i, s in enumerate(res["steps"], 1))
+            self._remember("user", text)
+            self._remember("zavero", reply)
+            actionlog.log("talk_marks", question=text, region=r, steps=len(res["steps"]))
+            return  # the overlay captions each part in the bubble as it marks it
         elif res["region"]:
-            r = res["region"]
+            r = res["region"]  # small diagram: an enlarged copy is easier to read and to mark
             side = (r["x"] + r["w"] / 2) / shot.width
             self.ui.show_board.emit(driver.crop_png(shot, r["x"], r["y"], r["w"], r["h"]), res["steps"], side)
             reply += "\n" + "\n".join(f"**{i}. {s['label']}** – {s['detail']}" for i, s in enumerate(res["steps"], 1))

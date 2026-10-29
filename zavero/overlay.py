@@ -54,6 +54,7 @@ TARGET = QColor("#FFB020")
 # Teacher pens for diagram explanations (talk.COLORS)
 PENS = {"red": "#E53935", "blue": "#1E66F5", "green": "#1F9D55", "orange": "#F59E0B", "purple": "#8E44AD"}
 STEP_S = 3.2  # seconds per explained step: ~1.3 s to draw, the rest to read the caption
+MARK_S = 7.0  # in-place marks: seconds per part (drawing + reading the caption) before the next one
 FAST_MS, IDLE_MS = 16, 33   # frame time while Chai moves / while it rests
 TYPE_S = 0.016              # bubble typewriter: seconds per character
 POP_S = 0.35                # bubble pop-in time
@@ -450,6 +451,7 @@ class Overlay(QWidget):
     show_board = pyqtSignal(bytes, list, float)  # PNG of a diagram, steps (talk.clean_drawing), its x on screen 0..1
     hide_board = pyqtSignal()
     show_keys = pyqtSignal(list)         # key chip for a shortcut step: ["Ctrl", "S"]; [] hides it
+    show_marks = pyqtSignal(int, int, int, int, list, str)  # diagram box (real px), steps, answer: marks ON the page
     show_3d = pyqtSignal(str)           # JSON scene from talk.answer_3d: the floating 3D board
     next_3d = pyqtSignal()              # next step on the 3D board (voice: next / inka / aage)
     show_arrow = pyqtSignal(int, int, int, int)  # drag / scroll arrow, real screen px from -> to
@@ -557,7 +559,9 @@ class Overlay(QWidget):
         self.hide_board.connect(self._on_hide_board)
         self._board3d = None
         self.show_3d.connect(self._on_show_3d)
-        self.next_3d.connect(lambda: self.is_3d_open and self._board3d.next())
+        self.next_3d.connect(self._next_step)
+        self._marks: dict | None = None
+        self.show_marks.connect(self._on_show_marks)
         self._invisible = False
         self._capture_sig.connect(self._set_invisible, Qt.ConnectionType.BlockingQueuedConnection)
 
@@ -702,17 +706,83 @@ class Overlay(QWidget):
             self._copied_at = self._t
             self._bubble_win.update()
         elif b == "step":
-            if self.is_3d_open:
-                self._board3d.next()
-            else:
-                self._board_next()
+            self._next_step()
         self.button_clicked.emit(b)
+
+    @property
+    def steps_open(self) -> bool:
+        """Something with steps is being explained (marks on the page, a diagram board, the 3D board)."""
+        return bool(self._marks or self._board or self.is_3d_open)
+
+    def _next_step(self) -> None:
+        if self._marks:
+            self._marks_next()
+        elif self.is_3d_open:
+            self._board3d.next()
+        elif self._board:
+            self._board_next()
+
+    # --- marks drawn right on the page (on the user's own diagram) --------------
+    def _on_show_marks(self, x: int, y: int, w: int, h: int, steps: list, answer: str) -> None:
+        if not steps:
+            return
+        self._board, self._target = None, None
+        rect = QRectF(self.local(x, y), self.local(x + w, y + h))
+        self._marks = {"rect": rect, "steps": steps, "answer": answer, "i": 0, "at": self._t, "all": False}
+        self._mark_caption()
+        self.update()
+
+    def _mark_dur(self, s: dict) -> float:
+        return 1.2 if s["shape"] == "text" else MARK_S
+
+    def _step_marks(self) -> None:
+        m = self._marks
+        if not m or m["all"]:
+            return
+        if self._t - m["at"] > self._mark_dur(m["steps"][m["i"]]):
+            if m["i"] < len(m["steps"]) - 1:
+                self._marks_next()
+            else:
+                m["all"] = True  # everything marked: stay, Next walks through again
+
+    def _marks_next(self) -> None:
+        m = self._marks
+        m["i"] += 1
+        if m["i"] >= len(m["steps"]):
+            m["i"], m["all"] = 0, True
+        m["at"] = self._t
+        self._mark_caption()
+        self.update()
+
+    def _mark_caption(self) -> None:
+        m = self._marks
+        s, n = m["steps"][m["i"]], len(m["steps"])
+        head = f"{m['answer']}\n\n" if m["i"] == 0 and not m["all"] and m["answer"] else ""
+        self._on_text(f"{head}**{m['i'] + 1}/{n} · {s['label']}** – {s['detail']}", "hold", ["step"])
+
+    def _paint_marks(self, p: QPainter) -> None:
+        m = self._marks
+        rect = m["rect"]
+        frame = QPen(QColor(255, 176, 32, 150), 2, Qt.PenStyle.DashLine)
+        p.setPen(frame)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(rect.adjusted(-6, -6, 6, 6), 12, 12)
+        for j, s in enumerate(m["steps"]):
+            if m["all"] or j < m["i"]:
+                prog = 1.0
+            elif j == m["i"]:
+                prog = min(1.0, (self._t - m["at"]) / (0.6 if s["shape"] == "text" else 1.3))
+            else:
+                continue
+            self._paint_stroke(p, s, j, rect, prog, highlight=(j == m["i"]), faded=(j != m["i"]))
 
     def board_context(self) -> str:
         """What the open board is explaining (for questions about a circled part)."""
         if self.is_3d_open:
             sc = self._board3d.scene
             return f"a 3D model '{sc['title']}' with parts: " + "; ".join(f"{s['label']} ({s['detail']})" for s in sc["steps"])
+        if self._marks:
+            return "a diagram on screen marked with: " + "; ".join(f"{s['label']} ({s['detail']})" for s in self._marks["steps"])
         if self._board:
             return "an enlarged diagram with these marks: " + "; ".join(f"{s['label']} ({s['detail']})" for s in self._board[1])
         return ""
@@ -733,6 +803,9 @@ class Overlay(QWidget):
 
     def _on_hide_board(self) -> None:
         self._board = None
+        if self._marks:
+            self._marks = None
+            self._on_text("", "info")
         self._lasso = None
         if self.is_3d_open:
             self._board3d.close_board()
@@ -983,6 +1056,7 @@ class Overlay(QWidget):
         self._step_visibility()
         self._step_bubble()
         self._step_ink()
+        self._step_marks()
         hover = self._on_chai(cur) and not self._invisible  # catch clicks only while the mouse is on Chai
         if self._drag is None and hover != self._hover:
             self._chai.setCursor(Qt.CursorShape.OpenHandCursor if hover else Qt.CursorShape.ArrowCursor)
@@ -1032,6 +1106,8 @@ class Overlay(QWidget):
             add(QRectF(pos.x() - 45, pos.y() - 45, 90, 90))
         if self._board:
             add(getattr(self, "_board_rect", QRectF(self.rect())).adjusted(-20, -20, 20, 30))
+        if self._marks:  # strokes growing / highlight pulsing on the page
+            add(self._marks["rect"].adjusted(-60, -60, 60, 60))
         if self._ink or self._lasso:  # pen trail / circled part
             pts = list(self._ink) + ([(q.x(), q.y()) for q in self._lasso[0]] if self._lasso else [])
             xs, ys = [q[0] for q in pts], [q[1] for q in pts]
@@ -1079,6 +1155,8 @@ class Overlay(QWidget):
             p.drawEllipse(pos, r, r)
         if self._board:
             self._paint_board(p)
+        if self._marks:
+            self._paint_marks(p)
         if self._arrow:
             self._paint_arrow(p)
         if self._ink or self._lasso:
@@ -1625,6 +1703,8 @@ class Overlay(QWidget):
         ]
         screen = self._work_area()
         board = getattr(self, "_board_rect", None) if self._board else None
+        if board is None and self._marks:
+            board = self._marks["rect"]
         if board is None and self.is_3d_open:
             board = self._board3d.rect_in_overlay()
         if board is not None:  # a diagram panel is open: bubble below it, else beside it
