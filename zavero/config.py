@@ -39,6 +39,10 @@ ASR_KEYWORDS = ["Zavero", "APSPDCL", "APEPDCL", "TGSPDCL", "current bill", "serv
 
 LOG_DIR = ROOT / "logs"
 
+# "how do I ... / ela ... / kaise ..." -> the Guide-anything coach (plan + steps) instead of the
+# step-by-step screen agent. Off for now: the APSPDCL bill demo runs on the screen agent.
+COACH_HOW_TO = False
+
 
 def api_key() -> str:
     """Return MODEL_API_KEY or exit with a clear message."""

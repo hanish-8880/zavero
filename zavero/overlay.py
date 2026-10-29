@@ -441,6 +441,8 @@ class Overlay(QWidget):
     attention = pyqtSignal()           # Chai twirls to catch the user's eye (reminders)
     show_board = pyqtSignal(bytes, list, float)  # PNG of a diagram, steps (talk.clean_drawing), its x on screen 0..1
     hide_board = pyqtSignal()
+    show_keys = pyqtSignal(list)         # key chip for a shortcut step: ["Ctrl", "S"]; [] hides it
+    show_arrow = pyqtSignal(int, int, int, int)  # drag / scroll arrow, real screen px from -> to
     _capture_sig = pyqtSignal(bool)    # blocking: hide/show around model screenshots
 
     def __init__(self) -> None:
@@ -529,6 +531,11 @@ class Overlay(QWidget):
         self.set_thinking.connect(self._on_thinking)
         self.hide_text.connect(lambda: self._on_text("", self._mood))
         self.dismiss.connect(self._on_dismiss)
+        self._keys: list[str] = []
+        self._arrow: tuple[QPointF, QPointF] | None = None
+        self.show_keys.connect(lambda keys: (setattr(self, "_keys", [str(k) for k in keys][:5]), self.update()))
+        self.show_arrow.connect(lambda x1, y1, x2, y2: (setattr(self, "_arrow", (self.local(x1, y1), self.local(x2, y2))),
+                                                         self.update()))
         self.attention.connect(lambda: setattr(self, "_twirl_at", self._t))
         self._board: tuple[QImage, list, float, float] | None = None  # image, marks, side, start time
         self.show_board.connect(self._on_board)
@@ -636,7 +643,7 @@ class Overlay(QWidget):
         if text and text != old:
             self._active_at = self._shown_at = self._t
             self._fade = 1.0
-        row = [b for b in (buttons or []) if b in BUTTONS and b != "close"]
+        row = [b for b in (buttons or []) if (b in BUTTONS or b.startswith("opt:")) and b != "close"]
         if self._board and self._board[1] and "step" not in row:
             row.append("step")  # diagram open: "Next →" walks through its steps
         self._buttons = ([] if mood == "listen" else ["close"]) + row
@@ -728,6 +735,7 @@ class Overlay(QWidget):
     def _on_point(self, x: int, y: int) -> None:
         self._target = self.local(x, y)
         self._label = ""
+        self._keys, self._arrow = [], None
         if self._drag is None:
             self._fly_to(self._perch(self._target))
 
@@ -746,6 +754,8 @@ class Overlay(QWidget):
 
     def _on_home(self) -> None:
         self._target = None
+        self._keys, self._arrow = [], None
+        self.update()
         if self._drag is None and not self._should_follow():  # while following, the spring takes over
             self._fly_to(self._home)
 
@@ -904,6 +914,9 @@ class Overlay(QWidget):
             add(QRectF(pos.x() - 45, pos.y() - 45, 90, 90))
         if self._board:
             add(getattr(self, "_board_rect", QRectF(self.rect())).adjusted(-20, -20, 20, 30))
+        if self._arrow:  # marching dashes
+            a, b = self._arrow
+            add(QRectF(a, b).normalized().adjusted(-30, -30, 30, 30))
         if not region.isEmpty():
             self.update(region)
         self._sync_bubble(moved)
@@ -944,7 +957,63 @@ class Overlay(QWidget):
             p.drawEllipse(pos, r, r)
         if self._board:
             self._paint_board(p)
+        if self._arrow:
+            self._paint_arrow(p)
+        if self._keys:
+            self._paint_keys(p)
         # Chai and the bubble are painted by their own small windows (_ChaiWindow, _BubbleWindow).
+
+    def _paint_arrow(self, p: QPainter) -> None:
+        """Drag / scroll guide: marching dashed arrow from where to press to where to let go."""
+        a, b = self._arrow
+        d = b - a
+        n = math.hypot(d.x(), d.y()) or 1
+        pen = QPen(TARGET, 4, Qt.PenStyle.CustomDashLine, Qt.PenCapStyle.RoundCap)
+        pen.setDashPattern([3, 2.5])
+        pen.setDashOffset(-self._t * 8)
+        p.setPen(pen)
+        p.drawLine(a, b - d * (14 / n))
+        ux, uy = d.x() / n, d.y() / n
+        head = QPainterPath(b)
+        head.lineTo(b - QPointF(ux * 18 - uy * 10, uy * 18 + ux * 10))
+        head.lineTo(b - QPointF(ux * 18 + uy * 10, uy * 18 - ux * 10))
+        head.closeSubpath()
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(TARGET)
+        p.drawPath(head)
+        p.setBrush(QColor(255, 255, 255))
+        p.setPen(QPen(TARGET, 3))
+        p.drawEllipse(a, 7, 7)  # press here
+
+    def _paint_keys(self, p: QPainter) -> None:
+        """Keyboard shortcut chip: big keycaps at the bottom centre of the work area."""
+        font = ui_font(13, bold=True)
+        p.setFont(font)
+        fm = QFontMetricsF(font)
+        caps = [(k, max(44.0, fm.horizontalAdvance(k) + 26)) for k in self._keys]
+        plus = 26
+        total = sum(w for _, w in caps) + plus * (len(caps) - 1) + 32
+        area = self._work_area()
+        box = QRectF(area.center().x() - total / 2, area.bottom() - 84, total, 64)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(15, 23, 42, 215))
+        p.drawRoundedRect(box, 18, 18)
+        x = box.left() + 16
+        for i, (k, w) in enumerate(caps):
+            cap = QRectF(x, box.top() + 12, w, 40)
+            p.setBrush(QColor(255, 255, 255, 60))
+            p.drawRoundedRect(cap.translated(0, 3), 9, 9)  # keycap depth
+            p.setBrush(QColor("#F8FAFC"))
+            p.drawRoundedRect(cap, 9, 9)
+            p.setPen(QColor(15, 23, 42))
+            p.drawText(cap, Qt.AlignmentFlag.AlignCenter, k)
+            p.setPen(Qt.PenStyle.NoPen)
+            x += w
+            if i < len(caps) - 1:
+                p.setPen(QColor(255, 255, 255))
+                p.drawText(QRectF(x, cap.top(), plus, 40), Qt.AlignmentFlag.AlignCenter, "+")
+                p.setPen(Qt.PenStyle.NoPen)
+                x += plus
 
     def _paint_target(self, p: QPainter) -> None:
         t = self._target
@@ -1166,6 +1235,8 @@ class Overlay(QWidget):
     def _button_label(self, b: str) -> str:
         if b == "copy" and self._t - self._copied_at < 1.2:
             return "✓"
+        if b.startswith("opt:"):  # an answer choice from the coach ("opt:Beginner")
+            return b[4:]
         return BUTTONS[b][lang(self._text)]
 
     def _row_width(self) -> float:

@@ -66,6 +66,7 @@ def test_yes_button_answers_the_question():
     o = Orchestrator.__new__(Orchestrator)
     o._worker = None
     o._asking, o._answer, o._answered = True, None, threading.Event()
+    o.coach = type("NoCoach", (), {"active": False})()
     o._waiting = False
     o.on_button("yes")
     assert o._answer is True and o._answered.is_set()

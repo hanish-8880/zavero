@@ -7,7 +7,7 @@ import time
 
 from pynput import keyboard, mouse
 
-from zavero import actionlog, briefing, config, driver, narrator, onboarding, reminders, safety, talk, writer
+from zavero import actionlog, briefing, coach, config, driver, narrator, onboarding, reminders, safety, talk, writer
 from zavero.phrases import friendly_error, lang, phrase, point_label
 from zavero.brain import Brain, Step
 
@@ -77,6 +77,7 @@ class Orchestrator:
         self._off_target = False
         self._strikes = 0
         self.reminders = reminders.Reminders()
+        self.coach = coach.Coach(self)
         self.gmail = None  # Gmail API client, set by main.py when Gmail is connected
         self.lang = briefing.load_state().get("lang", "en")  # user's language, remembered across runs
         mouse.Listener(on_click=self._on_click).start()
@@ -121,6 +122,12 @@ class Orchestrator:
         if self._onboard_q is not None:  # first-run hello: everything the user says goes to it
             self._onboard_q.put(text)
             return
+        if self.coach.active:  # a Guide-anything goal is running: it gets every answer
+            if intent == "stop":
+                self.stop()
+            else:
+                self.coach.feed(text)
+            return
         if not self._asking:
             self.ui.hide_board.emit()  # a new request closes the enlarged diagram
         if len(_norm(text).split()) > 2 and lang(text) != self.lang:
@@ -150,6 +157,12 @@ class Orchestrator:
             return
         if briefing.is_briefing(text) and not self.busy:
             threading.Thread(target=self.brief, daemon=True).start()
+            return
+        if not self.busy and coach.is_continue(text):  # "continue": resume the last unfinished goal
+            self.coach.resume()
+            return
+        if not self.busy and coach.is_goal(text):  # "teach me ..." / "I want to ...": plan + guided steps
+            self.coach.start(text)
             return
         if talk.is_question(text):  # "what is this?" -> quick answer; a running guide keeps going
             threading.Thread(target=self._talk, args=(text,), daemon=True).start()
@@ -230,6 +243,11 @@ class Orchestrator:
 
     def stop(self) -> None:
         """Cancel the running task right away."""
+        if self.coach.active:  # progress is saved: "continue" picks it up again
+            self.coach.cancel()
+            self.ui.go_home.emit()
+            self.ui.set_thinking.emit(False)
+            self._say(phrase("stopped", self.user_text), "done")
         if self.busy:
             self._cancel.set()
             self._acted.set()
@@ -587,6 +605,9 @@ class Orchestrator:
     def on_button(self, b: str) -> None:
         """A bubble button was clicked: same as saying it."""
         actionlog.log("button", id=b)
+        if self.coach.active:
+            self.coach.button(b)
+            return
         if self._asking and b in ("yes", "no", "close"):
             self._answer = b == "yes"  # closing a question = no
             self._answered.set()
