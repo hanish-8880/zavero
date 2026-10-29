@@ -10,6 +10,7 @@ import re
 from PIL import Image, ImageDraw
 
 from zavero import config, highlight
+from zavero.narrator import SEED, STYLE
 from zavero.driver import Shot, crop_png
 from zavero.reminders import extract_json
 
@@ -307,7 +308,8 @@ def answer(question: str, shot: Shot, mouse: tuple[int, int], user_lang: str = "
     system = SYSTEM_DRAW if draw else SYSTEM_ERROR if error else SYSTEM
     resp = config.client().responses.create(
         model=config.MODEL_SPARK, reasoning=config.REASONING,
-        instructions=system.replace("{lang}", LANG_NAME.get(user_lang, LANG_NAME["en"])),
+        instructions=system.replace("{lang}", LANG_NAME.get(user_lang, LANG_NAME["en"])) + "\n" + STYLE
+        + ("" if draw else " " + SEED),
         input=[{"role": "user", "content": [
             {"type": "input_text", "text": question},
             {"type": "input_image", "image_url": mark_pointer(shot, *mouse)},
