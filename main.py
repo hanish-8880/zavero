@@ -66,6 +66,7 @@ def main() -> None:
     def on_status(msg: str) -> None:
         print(f"[{msg}]", flush=True)
         if msg.startswith("Listening"):
+            orch.on_press()
             overlay.set_listening.emit(True)
             overlay.show_text.emit("Listening…", "listen")
         elif msg.startswith("Transcribing"):

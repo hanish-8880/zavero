@@ -71,6 +71,7 @@ class Orchestrator:
         self._answer: bool | None = None
         self._answered = threading.Event()
         self._say_seq = 0
+        self._talk_seq = 0  # bumped on every hotkey press: older quick answers still in flight are dropped
         self._guide_target: tuple[int, int] | None = None
         self._off_target = False
         self._strikes = 0
@@ -85,6 +86,12 @@ class Orchestrator:
         return self._worker is not None and self._worker.is_alive()
 
     # --- inputs ---------------------------------------------------------
+    def on_press(self) -> None:
+        """Hotkey went down: the user is interrupting. Drop older answers; Chai stops pointing."""
+        self._talk_seq += 1
+        if not self.busy:  # a running guide keeps its target
+            self.ui.go_home.emit()
+
     def on_transcript(self, text: str) -> None:
         """Called with each final transcript from voice.py."""
         intent = classify(text)
@@ -199,6 +206,7 @@ class Orchestrator:
         draw = talk.is_diagram(text)
         error = not draw and talk.is_error(text)
         self.ui.set_mode.emit("Diagram" if draw else "Error" if error else "Explain")
+        seq = self._talk_seq
         mouse_at = tuple(int(v) for v in mouse.Controller().position)
         try:
             self.ui.hide_for_capture()
@@ -209,7 +217,11 @@ class Orchestrator:
             res = self._think(lambda: talk.answer(self._with_context(text), shot, mouse_at, lang(text), draw, error))
         except Exception as e:  # noqa: BLE001
             actionlog.log("talk_error", text=text, error=str(e))
-            self._say(friendly_error(e, text), "error")
+            if seq == self._talk_seq:
+                self._say(friendly_error(e, text), "error")
+            return
+        if seq != self._talk_seq:  # the user pressed the hotkey again: this answer is stale
+            actionlog.log("talk_dropped", question=text)
             return
         reply = res["answer"]
         if res.get("sketch"):  # a new drawing on a blank whiteboard (side -1 = whiteboard)
@@ -228,12 +240,14 @@ class Orchestrator:
         actionlog.log("talk", question=text, answer=reply, point=res["point"], region=res["region"])
         self._say(reply, "info")
         if res.get("goto"):
-            self._open_line(res["goto"], reply, lang(text))
+            self._open_line(res["goto"], reply, lang(text), seq)
 
-    def _open_line(self, goto: dict, error: str, user_lang: str) -> None:
+    def _open_line(self, goto: dict, error: str, user_lang: str, seq: int) -> None:
         """Jump to the broken line in VS Code, point at it and say exactly what to change."""
         file, line = goto["file"], goto["line"]
         time.sleep(2.5)  # let the user read the first explanation
+        if seq != self._talk_seq:  # they asked something else meanwhile
+            return
         if not driver.open_in_editor(file, line):
             self._say(f"{error}\n\n👉 Open **{file}** and go to line **{line}** (Ctrl+G).", "info")
             return
