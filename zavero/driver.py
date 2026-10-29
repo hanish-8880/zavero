@@ -206,6 +206,11 @@ def _type_text(text: str) -> None:
     if text.isascii():
         pyautogui.write(text, interval=0.02)
         return
+    set_clipboard(text)
+    pyautogui.hotkey("ctrl", "v")
+
+
+def set_clipboard(text: str) -> None:
+    """Put Unicode text (Telugu/Hindi too) on the Windows clipboard."""
     import subprocess
     subprocess.run(["clip"], input=text.encode("utf-16-le"), check=True)
-    pyautogui.hotkey("ctrl", "v")

@@ -6,7 +6,7 @@ import time
 
 from pynput import keyboard, mouse
 
-from zavero import actionlog, briefing, config, driver, narrator, reminders, safety, talk
+from zavero import actionlog, briefing, config, driver, narrator, reminders, safety, talk, writer
 from zavero.phrases import friendly_error, lang, phrase, point_label
 from zavero.brain import Brain, Step
 
@@ -135,6 +135,10 @@ class Orchestrator:
         if reminders.is_reminder(text):  # handled on the side; a running guide keeps going
             threading.Thread(target=self._remind, args=(text,), daemon=True).start()
             return
+        platform = writer.platform_of(text)
+        if platform and not self.busy:  # "post this on LinkedIn": write it, show it, post only after a yes
+            threading.Thread(target=self._post, args=(text, platform), daemon=True).start()
+            return
         if briefing.is_briefing(text) and not self.busy:
             threading.Thread(target=self.brief, daemon=True).start()
             return
@@ -193,8 +197,9 @@ class Orchestrator:
             self.ui.set_thinking.emit(False)
             self._say(phrase("stopped", self.user_text), "done")
 
-    def start(self, text: str, mode: str) -> None:
-        self.user_text = text
+    def start(self, text: str, mode: str, said: str | None = None) -> None:
+        """Run a task. said = the user's own words when text is a task Zavero wrote (keeps their language)."""
+        self.user_text = said or text
         self.mode = mode
         self._prefetched = None  # guide/do mode always looks at the screen fresh
         self._cancel.clear()
@@ -290,6 +295,34 @@ class Orchestrator:
             self.ui.set_label.emit(f"line {line}")
         self._remember("zavero", res.get("answer", ""))
         self._say(f"**{file} · line {line}**\n{res.get('answer', '')}", "info")
+
+    # --- "post this on LinkedIn" --------------------------------------------
+    def _post(self, text: str, platform: str) -> None:
+        """Write the post, show it, and after a spoken yes put it on the site (stopping before Post)."""
+        self.ui.set_mode.emit("Post")
+        try:
+            shot = self._take_prefetched()
+            if shot is None:
+                self.ui.hide_for_capture()
+                try:
+                    shot = driver.screenshot(keep_full=True)
+                finally:
+                    self.ui.show_after_capture()
+            res = self._think(lambda: writer.compose_post(text, shot, platform, writer.post_language(text)))
+        except Exception as e:  # noqa: BLE001
+            actionlog.log("post_error", text=text, error=str(e))
+            self._say(friendly_error(e, text), "error")
+            return
+        image = writer.save_screenshot(shot) if writer.wants_screenshot(text) else None
+        site = {"linkedin": "LinkedIn", "x": "X", "facebook": "Facebook"}[platform]
+        draft = res["post"] if len(res["post"]) < 700 else res["post"][:700] + "…"
+        actionlog.log("post_draft", platform=platform, post=res["post"], image=str(image or ""))
+        if not self.ask(f"{draft}\n\n{phrase('post_ask', text).format(site=site)}"):
+            self._say(phrase("post_cancel", text), "done")
+            return
+        driver.set_clipboard(res["post"])  # pasted, never typed: works for Telugu/Hindi too
+        actionlog.log("post_approved", platform=platform)
+        self.start(writer.post_task(platform, image), "do", said=text)
 
     # --- "what matters today?" -------------------------------------------
     def brief(self) -> None:

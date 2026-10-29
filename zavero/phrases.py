@@ -38,6 +38,16 @@ PHRASES = {
         "te": "ఇంకా ఏ రిమైండర్లు లేవు 🙂",
         "hi": "अभी कोई रिमाइंडर नहीं है 🙂",
     },
+    "post_ask": {
+        "en": "👆 Your post. Hold **Right Ctrl** and say **yes** to put it on {site} (I'll stop before **Post**), or **no**.",
+        "te": "👆 మీ పోస్ట్. {site} లో పెట్టాలంటే **Right Ctrl** పట్టుకుని **అవును** అనండి (**Post** ముందు ఆగుతాను), వద్దంటే **వద్దు**.",
+        "hi": "👆 आपकी पोस्ट। {site} पर डालनी है तो **Right Ctrl** दबाकर **हाँ** बोलिए (**Post** से पहले रुकूँगा), नहीं तो **नहीं**।",
+    },
+    "post_cancel": {
+        "en": "Okay, I won't post it 🙂",
+        "te": "సరే, పోస్ట్ చేయను 🙂",
+        "hi": "ठीक है, पोस्ट नहीं करूँगा 🙂",
+    },
     "api_down": {
         "en": "I can't reach the internet right now 📶 Please check your connection and try again.",
         "te": "ఇప్పుడు ఇంటర్నెట్ అందడం లేదు 📶 కనెక్షన్ చూసి మళ్ళీ ప్రయత్నించండి.",
