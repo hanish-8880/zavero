@@ -1,4 +1,5 @@
 """Settings and constants. Reads the API key from .env."""
+import functools
 import os
 from pathlib import Path
 
@@ -47,8 +48,17 @@ def api_key() -> str:
     return key
 
 
+@functools.lru_cache(maxsize=1)
 def client():
-    """OpenAI SDK client pointed at the Meta Model API."""
+    """OpenAI SDK client pointed at the Meta Model API. One shared client = one warm TLS connection."""
     from openai import OpenAI
 
     return OpenAI(base_url=BASE_URL, api_key=api_key(), timeout=API_TIMEOUT_S)
+
+
+def warm_up() -> None:
+    """Open the API connection early so the first question isn't slow. Errors don't matter here."""
+    try:
+        client().models.list()
+    except Exception:  # noqa: BLE001
+        pass

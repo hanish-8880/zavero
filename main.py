@@ -48,6 +48,7 @@ def main() -> None:
 
     overlay = Overlay()
     overlay.show()
+    threading.Thread(target=config.warm_up, daemon=True).start()
     orch = Orchestrator(overlay)
 
     tray = QSystemTrayIcon(avatar_icon(), app)
